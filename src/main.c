@@ -52,9 +52,6 @@
 #include "lcd.h"
 #include "menu.h"
 
-/* Global variables */
-uint8_t device_address = CONFIG_DEFAULT_ADDR;   // Current device address
-
 #ifdef HAVE_DUAL_INTERFACE
   uint8_t active_bus = IEEE488;
 #endif

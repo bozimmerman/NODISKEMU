@@ -257,10 +257,8 @@ void menu_device_number(void) {
 }
 
 
-#ifdef HAVE_RTC
-static const PROGMEM uint8_t menu_setclk_pos[] = {0, 3, 9, 12, 15, 18, 0, 8};
-#endif
 static const PROGMEM uint8_t monthnames[] = "JANFEBMARAPRMAYJUNJULAUGSEPOCTNOVDEC";
+static const PROGMEM uint8_t menu_setclk_pos[] = {0, 3, 9, 12, 15, 18, 0, 8};
 static const PROGMEM uint8_t number_of_days[] = {
   31, // January
   28, // February
@@ -326,11 +324,9 @@ uint8_t calc_number_of_days(uint8_t month, uint8_t year) {
 
 
 void menu_set_clock(void) {
-#if HAVE_RTC
   struct tm t;
   uint8_t p;
   uint8_t days;
-
 
   switch (rtc_state) {
     case RTC_INVALID:
@@ -402,9 +398,6 @@ void menu_set_clock(void) {
       }
     }
   }
-#else
-  return;               // no RTC
-#endif
 }
 
 void lcd_print_dir_entry(uint16_t i) {
