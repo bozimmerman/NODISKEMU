@@ -63,8 +63,10 @@ typedef enum { DIR_FMT_CBM, DIR_FMT_CMD_SHORT, DIR_FMT_CMD_LONG } dirformat_t;
  * @data     : Pointer to the data area of the buffer, MUST be the first field
  * @lastused : Index to the last used byted
  * @position : Index of the byte that will be read/written next
+ * @ptr      : Used in fat-ops, but not in d64 --
  * @seconday : Secondary address the buffer is associated with
  * @recordlen: Record length, if buffer points to a REL file
+ * @recordpos: Record position, which might differ from buffer
  * @allocated: Flags if the buffer is allocated or not
  * @mustflush: Flags if the buffer must be flushed before adding characters
  * @read     : Flags if the buffer was opened for reading
@@ -88,7 +90,15 @@ typedef struct buffer_s {
   uint8_t position;
   uint8_t secondary;
   uint8_t recordlen;
-  uint32_t fptr;  // FIXME: Missing from doc comment
+  union
+  {
+    uint32_t fptr;  // FIXME: Missing from doc comment
+    struct
+    {
+      uint16_t recordpos;
+      uint8_t recordindex;
+    } rel;
+  };
   int     allocated:1;
   int     mustflush:1;
   int     read:1;

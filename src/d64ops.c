@@ -1160,11 +1160,28 @@ static uint8_t d64_read(buffer_t *buf) {
  * @position: offset to seek to
  * @index   : offset within the record to seek to
  *
- * This is the function used as the seek callback. Since seeking
- * isn't supported for D64 files it just sets an error message
- * and returns 1.
+ * This is the function used as the seek callback.
  */
 static uint8_t d64_seek(buffer_t *buf, uint32_t position, uint8_t index) {
+  // everything here is 0 based!
+  uint16_t recordno = position / buf->recordlen;
+  if(buf->rel.recordindex == recordno+1)
+  {
+    buf->rel.recordindex = index+1;
+    return 0;
+  }
+  if(position >= 182880) //TODO: magic number for non 8250 rels
+  {
+    set_error(ERROR_RECORD_MISSING);
+    return 1;
+  }
+  uint32_t sector_index = position / 254;
+  uint8_t sidesector_no = sector_index / 120;
+  uint8_t link_lookup[2];
+
+
+
+
   set_error(ERROR_SYNTAX_UNABLE);
   return 1;
 }
@@ -1545,50 +1562,52 @@ static void d64_open_read(path_t *path, cbmdirent_t *dent, buffer_t *buf) {
   buf->refill(buf);
 }
 
-static void d64_open_write(path_t *path, cbmdirent_t *dent, uint8_t type, buffer_t *buf, uint8_t append) {
+static int d64_open_append(path_t *path, cbmdirent_t *dent, buffer_t *buf)
+{
+  /* Append case: Open the file and read the last sector */
+  d64_open_read(path, dent, buf);
+  while (!current_error && buf->data[0])
+    buf->refill(buf);
+
+  if (current_error)
+    return 1;
+
+  /* Modify the buffer for writing */
+  buf->pvt.d64.dh     = dent->pvt.dxx.dh;
+  buf->pvt.d64.blocks = ops_scratch[DIR_OFS_SIZE_LOW] + 256 * ops_scratch[DIR_OFS_SIZE_HI]-1;
+  buf->read       = 0;
+  buf->position   = buf->lastused+1;
+  if (buf->position == 0)
+    buf->mustflush = 1;
+  else
+    buf->mustflush = 0;
+  buf->refill     = d64_write;
+  buf->cleanup    = d64_write_cleanup;
+  buf->seek       = d64_seek;
+  mark_write_buffer(buf);
+
+  update_timestamp(ops_scratch);
+  write_entry(buf->pvt.d64.part, &buf->pvt.d64.dh, ops_scratch, 1);
+
+  return 0;
+}
+
+static int d64_open_create(path_t *path, cbmdirent_t *dent, uint8_t type, buffer_t *buf, uint8_t recordlen)
+{
   dh_t dh;
   uint8_t *ptr;
 
-  /* Check for read-only image file */
-  if (!(partition[path->part].imagehandle.flag & FA_WRITE)) {
-    set_error(ERROR_WRITE_PROTECT);
-    return;
-  }
-
-  if (append) {
-    /* Append case: Open the file and read the last sector */
-    d64_open_read(path, dent, buf);
-    while (!current_error && buf->data[0])
-      buf->refill(buf);
-
-    if (current_error)
-      return;
-
-    /* Modify the buffer for writing */
-    buf->pvt.d64.dh     = dent->pvt.dxx.dh;
-    buf->pvt.d64.blocks = ops_scratch[DIR_OFS_SIZE_LOW] + 256 * ops_scratch[DIR_OFS_SIZE_HI]-1;
-    buf->read       = 0;
-    buf->position   = buf->lastused+1;
-    if (buf->position == 0)
-      buf->mustflush = 1;
-    else
-      buf->mustflush = 0;
-    buf->refill     = d64_write;
-    buf->cleanup    = d64_write_cleanup;
-    buf->seek       = d64_seek;
-    mark_write_buffer(buf);
-
-    update_timestamp(ops_scratch);
-    write_entry(buf->pvt.d64.part, &buf->pvt.d64.dh, ops_scratch, 1);
-
-    return;
-  }
-
   /* Non-append case */
+  if(type == TYPE_REL)
+  {
+    if(recordlen == 0)
+      set_error(ERROR_NO_CHANNEL);
+    return 1;
+  }
 
   /* Search for an empty directory entry */
   if (find_empty_entry(path, &dh))
-    return;
+    return 1;
 
   /* Create directory entry in ops_scratch */
   uint8_t *name = dent->name;
@@ -1602,18 +1621,49 @@ static void d64_open_write(path_t *path, cbmdirent_t *dent, uint8_t type, buffer
   uint8_t t,s;
 
   if (get_first_sector(path->part,&t,&s))
-    return;
+    return 1;
 
   ops_scratch[DIR_OFS_TRACK]  = t;
   ops_scratch[DIR_OFS_SECTOR] = s;
 
   if (allocate_sector(path->part,t,s))
-    return;
+    return 1;
+
+  // finish up the directory entry
+  update_timestamp(ops_scratch);
+  if(type == TYPE_REL)
+  {
+    /* Find a free side sector and allocate it */
+    uint8_t st,ss;
+    if (get_first_sector(path->part,&st,&ss))
+      return 1;
+
+    if (allocate_sector(path->part,st,ss))
+      return 1;
+
+    ops_scratch[DIR_OFS_SIDE_TRACK]  = st;
+    ops_scratch[DIR_OFS_SIDE_SECTOR] = ss;
+    ops_scratch[DIR_OFS_RECORD_LEN] = recordlen;
+
+    uint8_t data[256];
+
+    // write first side sector;
+    memset(data,0,256);
+    data[1] = 0x11;
+    data[3] = recordlen;
+    data[4] = st;
+    data[5] = ss;
+    data[0x10] = t;
+    data[0x11] = s;
+    if(image_write(path->part, sector_offset(path->part, st, ss), data, 256, 1))
+      return 1;
+
+    //TODO: create either the super side sector.
+  }
 
   /* Write the directory entry */
-  update_timestamp(ops_scratch);
   if (write_entry(path->part, &dh.dir.d64, ops_scratch, 1))
-    return;
+    return 1;
 
   /* Prepare the data buffer */
   mark_write_buffer(buf);
@@ -1627,10 +1677,59 @@ static void d64_open_write(path_t *path, cbmdirent_t *dent, uint8_t type, buffer
   buf->pvt.d64.part   = path->part;
   buf->pvt.d64.track  = t;
   buf->pvt.d64.sector = s;
+  if(type == TYPE_REL)
+  {
+    uint8_t lastb=2;
+    memset(buf->data,0,256);
+    for(int i=2;i<256;i+=recordlen)
+    {
+      lastb=i;
+      buf->data[i] = 0xff;
+    }
+    buf->data[1] = lastb + recordlen - 1;
+    buf->mustflush = 1;
+  }
+  return 0;
+}
+
+static void d64_open_write(path_t *path, cbmdirent_t *dent, uint8_t type, buffer_t *buf, uint8_t append) {
+  /* Check for read-only image file */
+  if (!(partition[path->part].imagehandle.flag & FA_WRITE)) {
+    set_error(ERROR_WRITE_PROTECT);
+    return;
+  }
+
+  if (append) {
+    d64_open_append(path, dent, buf);
+    return;
+  }
+  d64_open_create(path, dent, type, buf, -1);
 }
 
 static void d64_open_rel(path_t *path, cbmdirent_t *dent, buffer_t *buf, uint8_t length, uint8_t mode) {
-  set_error(ERROR_SYNTAX_UNABLE);
+  // path: part, dxx.track, dxx.sector- of First dir entry
+  // dent: name, blocksize, remainder, pvt.dxx.dh: track, sector, entry# of dile
+  // NOTE: 70 no channel 0 0 happens on mismatch of recordlen, but only if you "p"
+  // NOTE: 50 record not present happens if you P to a record not there yet
+  if(mode == OPEN_MODIFY)
+  {
+    // the file already exists
+    if(d64_open_append(path, dent, buf))
+      return;
+    buf->read      = 1;
+    buf->position  = 2; // always starts at beginning when reading
+    buf->mustflush = 1;
+    //compare length to record length, return error if mismatch? didnt see that behavior in VICE
+  }
+  else
+  {
+    if((length == 0)||(length>255))
+      set_error(ERROR_NO_CHANNEL);
+    else
+      d64_open_create(path, dent, TYPE_REL, buf, length);
+  }
+  buf->rel.recordpos = 1;
+  buf->rel.recordindex = 1;
 }
 
 static uint8_t d64_delete(path_t *path, cbmdirent_t *dent) {
@@ -1650,6 +1749,18 @@ static uint8_t d64_delete(path_t *path, cbmdirent_t *dent) {
     if (checked_read(path->part, linkbuf[0], linkbuf[1], linkbuf, 2, ERROR_ILLEGAL_TS_LINK))
       return 255;
   } while (linkbuf[0]);
+
+  if(ops_scratch[DIR_OFS_FILE_TYPE] == TYPE_REL)
+  {
+    linkbuf[0] = ops_scratch[DIR_OFS_SIDE_TRACK];
+    linkbuf[1] = ops_scratch[DIR_OFS_SIDE_SECTOR];
+    do {
+      free_sector(path->part, linkbuf[0], linkbuf[1]);
+
+      if (checked_read(path->part, linkbuf[0], linkbuf[1], linkbuf, 2, ERROR_ILLEGAL_TS_LINK))
+        return 255;
+    } while (linkbuf[0]);
+  }
 
   /* Clear directory entry */
   ops_scratch[DIR_OFS_FILE_TYPE] = 0;
