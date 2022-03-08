@@ -93,11 +93,7 @@ typedef struct buffer_s {
   union
   {
     uint32_t fptr;  // FIXME: Missing from doc comment
-    struct
-    {
-      uint16_t recordpos;
-      uint8_t recordindex;
-    } rel;
+    int32_t rpos;  // rel file requested position
   };
   int     allocated:1;
   int     mustflush:1;

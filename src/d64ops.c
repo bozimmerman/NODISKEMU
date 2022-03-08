@@ -265,10 +265,11 @@ static uint16_t sectors_per_track(uint8_t part, uint8_t track) {
 }
 
 /**
- * checked_read - read a specified sector after range-checking
+ * checked_read_full - read a specified sector after range-checking
  * @part  : partition number
  * @track : track number to be read
  * @sector: sector number to be read
+ * @offset: offset in sector to read from
  * @buf   : pointer to where the data should be read to
  * @len   : number of bytes to be read
  * @error : error number to be flagged if the range check fails
@@ -278,7 +279,8 @@ static uint16_t sectors_per_track(uint8_t part, uint8_t track) {
  * the data if they are. Returns the result of image_read or
  * 2 if the range check failed.
  */
-static uint8_t checked_read(uint8_t part, uint8_t track, uint8_t sector, uint8_t *buf, uint16_t len, uint8_t error) {
+static uint8_t checked_read_full(uint8_t part, uint8_t track, uint8_t sector, uint8_t offset,
+                                 uint8_t *buf, uint16_t len, uint8_t error) {
   if (track < 1 || track > get_param(part, LAST_TRACK) ||
       sector >= sectors_per_track(part, track)) {
     set_error_ts(error,track,sector);
@@ -346,7 +348,26 @@ static uint8_t checked_read(uint8_t part, uint8_t track, uint8_t sector, uint8_t
     /* 1 is OK, unknown values are accepted too */
   }
 
-  return image_read(part, sector_offset(part,track,sector), buf, len);
+  return image_read(part, sector_offset(part,track,sector)+offset, buf, len);
+}
+
+/**
+ * checked_read - read a specified sector after range-checking
+ * @part  : partition number
+ * @track : track number to be read
+ * @sector: sector number to be read
+ * @buf   : pointer to where the data should be read to
+ * @len   : number of bytes to be read
+ * @error : error number to be flagged if the range check fails
+ *
+ * This function checks if the track and sector are within the
+ * limits for the image format and calls image_read to read
+ * the data if they are. Returns the result of image_read or
+ * 2 if the range check failed.
+ */
+static uint8_t checked_read(uint8_t part, uint8_t track, uint8_t sector,
+                            uint8_t *buf, uint16_t len, uint8_t error) {
+  return checked_read_full(part, track, sector, 0, buf, len, error);
 }
 
 /**
@@ -1164,26 +1185,51 @@ static uint8_t d64_read(buffer_t *buf) {
  */
 static uint8_t d64_seek(buffer_t *buf, uint32_t position, uint8_t index) {
   // everything here is 0 based!
-  uint16_t recordno = position / buf->recordlen;
-  if(buf->rel.recordindex == recordno+1)
-  {
-    buf->rel.recordindex = index+1;
-    return 0;
-  }
-  if(position >= 182880) //TODO: magic number for non 8250 rels
+  if(position+index >= 182880) //TODO: magic number for non 8250 rels
   {
     set_error(ERROR_RECORD_MISSING);
     return 1;
   }
+  buf->rpos = position+index;
+/*
+struct d64dh {
+  uint8_t track;
+  uint8_t sector;
+  uint8_t entry;
+};
+typedef struct d64fh {
+  struct d64dh dh;
+  uint8_t part;
+  uint8_t track;
+  uint8_t sector;
+  uint16_t blocks;
+} d64fh_t;
+*/
   uint32_t sector_index = position / 254;
   uint8_t sidesector_no = sector_index / 120;
+  uint8_t sidesector_pos = ((sector_index % 120) * 2) + 0x10;
+  if(sidesector_no > 5)
+  {
+    set_error(ERROR_RECORD_MISSING);
+    return 1;
+  }
   uint8_t link_lookup[2];
-
-
-
-
-  set_error(ERROR_SYNTAX_UNABLE);
-  return 1;
+  if (checked_read_full(buf->pvt.d64.part, buf->pvt.d64.dh.track, buf->pvt.d64.dh.sector, (buf->pvt.d64.dh.entry * 32) + DIR_OFS_SIDE_TRACK,
+                        link_lookup, 2, ERROR_RECORD_MISSING))
+    return 1;
+  while(sidesector_no > 0) {
+      if (checked_read_full(buf->pvt.d64.part, link_lookup[0], link_lookup[1], 0, link_lookup, 2, ERROR_RECORD_MISSING))
+        return 1;
+      sidesector_no--;
+  }
+  if (checked_read_full(buf->pvt.d64.part, link_lookup[0], link_lookup[1], sidesector_pos, link_lookup, 2, ERROR_RECORD_MISSING))
+    return 1;
+  if(link_lookup[0])
+  {
+      set_error(ERROR_RECORD_MISSING);
+      return 1;
+  }
+  return 0; // it exists!
 }
 
 /**
@@ -1687,7 +1733,9 @@ static int d64_open_create(path_t *path, cbmdirent_t *dent, uint8_t type, buffer
       buf->data[i] = 0xff;
     }
     buf->data[1] = lastb + recordlen - 1;
+    buf->pvt.d64.blocks++;
     buf->mustflush = 1;
+    mark_buffer_dirty(buf);
   }
   return 0;
 }
@@ -1718,7 +1766,7 @@ static void d64_open_rel(path_t *path, cbmdirent_t *dent, buffer_t *buf, uint8_t
       return;
     buf->read      = 1;
     buf->position  = 2; // always starts at beginning when reading
-    buf->mustflush = 1;
+    mark_buffer_dirty(buf);
     //compare length to record length, return error if mismatch? didnt see that behavior in VICE
   }
   else
@@ -1728,8 +1776,10 @@ static void d64_open_rel(path_t *path, cbmdirent_t *dent, buffer_t *buf, uint8_t
     else
       d64_open_create(path, dent, TYPE_REL, buf, length);
   }
-  buf->rel.recordpos = 1;
-  buf->rel.recordindex = 1;
+  buf->rpos = -1; // signal that no POS command has been given
+  //buf->refill     = d64_readwrite;
+  //buf->cleanup    = d64_write_cleanup;
+  //buf->seek       = d64_seek;
 }
 
 static uint8_t d64_delete(path_t *path, cbmdirent_t *dent) {
