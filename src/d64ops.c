@@ -1191,23 +1191,15 @@ static uint8_t d64_seek(buffer_t *buf, uint32_t position, uint8_t index) {
     return 1;
   }
   buf->rpos = position+index;
-/*
-struct d64dh {
-  uint8_t track;
-  uint8_t sector;
-  uint8_t entry;
-};
-typedef struct d64fh {
-  struct d64dh dh;
-  uint8_t part;
-  uint8_t track;
-  uint8_t sector;
-  uint16_t blocks;
-} d64fh_t;
-*/
+  buf->mustflush = 1;
   uint32_t sector_index = position / 254;
   uint8_t sidesector_no = sector_index / 120;
   uint8_t sidesector_pos = ((sector_index % 120) * 2) + 0x10;
+  memset(buf->data,0,2);
+  buf->data[2] = 13;
+  buf->position=2;
+  buf->lastused=3;
+  buf->sendeoi=1;
   if(sidesector_no > 5)
   {
     set_error(ERROR_RECORD_MISSING);
@@ -1224,11 +1216,26 @@ typedef struct d64fh {
   }
   if (checked_read_full(buf->pvt.d64.part, link_lookup[0], link_lookup[1], sidesector_pos, link_lookup, 2, ERROR_RECORD_MISSING))
     return 1;
-  if(link_lookup[0])
+  if(!link_lookup[0])
   {
       set_error(ERROR_RECORD_MISSING);
       return 1;
   }
+  buf->data[0] = link_lookup[0];
+  buf->data[1] = link_lookup[1];
+  if(d64_read(buf))
+    return 1;
+  buf->rpos = 0;
+  buf->mustflush = 0;
+  uint8_t rec_pos = 2 + ((position+index) % 254);
+  buf->position = rec_pos;
+  if(((!buf->data[0])&&(buf->data[1] <= rec_pos))
+  ||(buf->pvt.d64.blocks == 0))
+  {
+      set_error(ERROR_RECORD_MISSING);
+      return 1;
+  }
+  buf->sendeoi=0;
   return 0; // it exists!
 }
 
@@ -1608,17 +1615,8 @@ static void d64_open_read(path_t *path, cbmdirent_t *dent, buffer_t *buf) {
   buf->refill(buf);
 }
 
-static int d64_open_append(path_t *path, cbmdirent_t *dent, buffer_t *buf)
+static int d64_mod_for_write(path_t *path, cbmdirent_t *dent, buffer_t *buf)
 {
-  /* Append case: Open the file and read the last sector */
-  d64_open_read(path, dent, buf);
-  while (!current_error && buf->data[0])
-    buf->refill(buf);
-
-  if (current_error)
-    return 1;
-
-  /* Modify the buffer for writing */
   buf->pvt.d64.dh     = dent->pvt.dxx.dh;
   buf->pvt.d64.blocks = ops_scratch[DIR_OFS_SIZE_LOW] + 256 * ops_scratch[DIR_OFS_SIZE_HI]-1;
   buf->read       = 0;
@@ -1636,6 +1634,20 @@ static int d64_open_append(path_t *path, cbmdirent_t *dent, buffer_t *buf)
   write_entry(buf->pvt.d64.part, &buf->pvt.d64.dh, ops_scratch, 1);
 
   return 0;
+}
+
+static int d64_open_append(path_t *path, cbmdirent_t *dent, buffer_t *buf)
+{
+  /* Append case: Open the file and read the last sector */
+  d64_open_read(path, dent, buf);
+  while (!current_error && buf->data[0])
+    buf->refill(buf);
+
+  if (current_error)
+    return 1;
+
+  /* Modify the buffer for writing */
+  return d64_mod_for_write(path, dent, buf);
 }
 
 static int d64_open_create(path_t *path, cbmdirent_t *dent, uint8_t type, buffer_t *buf, uint8_t recordlen)
@@ -1762,8 +1774,12 @@ static void d64_open_rel(path_t *path, cbmdirent_t *dent, buffer_t *buf, uint8_t
   if(mode == OPEN_MODIFY)
   {
     // the file already exists
-    if(d64_open_append(path, dent, buf))
+    if((d64_open_read(path, dent, buf))
+    ||(d64_mod_for_write(path, dent, buf)))
+    {
+      set_error(ERROR_NO_CHANNEL);
       return;
+    }
     buf->read      = 1;
     buf->position  = 2; // always starts at beginning when reading
     mark_buffer_dirty(buf);
@@ -1776,10 +1792,10 @@ static void d64_open_rel(path_t *path, cbmdirent_t *dent, buffer_t *buf, uint8_t
     else
       d64_open_create(path, dent, TYPE_REL, buf, length);
   }
-  buf->rpos = -1; // signal that no POS command has been given
-  //buf->refill     = d64_readwrite;
-  //buf->cleanup    = d64_write_cleanup;
-  //buf->seek       = d64_seek;
+  buf->rpos       = 0; // signal that no POS command has been given
+  buf->refill     = d64_readwrite;
+  buf->cleanup    = d64_write_cleanup;
+  buf->seek       = d64_seek;
 }
 
 static uint8_t d64_delete(path_t *path, cbmdirent_t *dent) {
