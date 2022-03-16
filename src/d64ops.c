@@ -1185,21 +1185,20 @@ static uint8_t d64_read(buffer_t *buf) {
  */
 static uint8_t d64_seek(buffer_t *buf, uint32_t position, uint8_t index) {
   // everything here is 0 based!
+  buf->read    = 0;
   if(position+index >= 182880) //TODO: magic number for non 8250 rels
   {
     set_error(ERROR_RECORD_MISSING);
     return 1;
   }
   buf->rpos = position+index;
-  buf->mustflush = 1;
   uint32_t sector_index = position / 254;
   uint8_t sidesector_no = sector_index / 120;
   uint8_t sidesector_pos = ((sector_index % 120) * 2) + 0x10;
   memset(buf->data,0,2);
   buf->data[2] = 13;
   buf->position=2;
-  buf->lastused=3;
-  buf->sendeoi=1;
+  buf->lastused=2;
   if(sidesector_no > 5)
   {
     set_error(ERROR_RECORD_MISSING);
@@ -1209,6 +1208,11 @@ static uint8_t d64_seek(buffer_t *buf, uint32_t position, uint8_t index) {
   if (checked_read_full(buf->pvt.d64.part, buf->pvt.d64.dh.track, buf->pvt.d64.dh.sector, (buf->pvt.d64.dh.entry * 32) + DIR_OFS_SIDE_TRACK,
                         link_lookup, 2, ERROR_RECORD_MISSING))
     return 1;
+  if(partition[buf->pvt.d64.part].imagetype == D64_TYPE_D82)
+  {
+      //TODO: directly read the correct super side sector link.  You have the SSS t&s in link_lookup
+
+  }
   while(sidesector_no > 0) {
       if (checked_read_full(buf->pvt.d64.part, link_lookup[0], link_lookup[1], 0, link_lookup, 2, ERROR_RECORD_MISSING))
         return 1;
@@ -1229,13 +1233,13 @@ static uint8_t d64_seek(buffer_t *buf, uint32_t position, uint8_t index) {
   buf->mustflush = 0;
   uint8_t rec_pos = 2 + ((position+index) % 254);
   buf->position = rec_pos;
+  buf->read    = 1;
   if(((!buf->data[0])&&(buf->data[1] <= rec_pos))
   ||(buf->pvt.d64.blocks == 0))
   {
       set_error(ERROR_RECORD_MISSING);
       return 1;
   }
-  buf->sendeoi=0;
   return 0; // it exists!
 }
 
@@ -1335,7 +1339,6 @@ static uint8_t d64_write_cleanup(buffer_t *buf) {
 
   return 0;
 }
-
 
 /* ------------------------------------------------------------------------- */
 /*  fileops-API                                                              */
@@ -1698,6 +1701,11 @@ static int d64_open_create(path_t *path, cbmdirent_t *dent, uint8_t type, buffer
 
     if (allocate_sector(path->part,st,ss))
       return 1;
+
+    if(partition[path->part].imagetype == D64_TYPE_D82)
+    {
+        //TODO: make the SUPER side sector instead
+    }
 
     ops_scratch[DIR_OFS_SIDE_TRACK]  = st;
     ops_scratch[DIR_OFS_SIDE_SECTOR] = ss;
@@ -2240,6 +2248,38 @@ static void format_d80_image(uint8_t part, buffer_t *buf, uint8_t *name, uint8_t
 static void format_d82_image(uint8_t part, buffer_t *buf, uint8_t *name, uint8_t *idbuf) {
 }
   // TODO: implement D82 format
+
+
+static void d64_readwrite(buffer_t *buf)
+{
+  if(!buf->read && buf->rpos)
+  {
+      // this *must* have been called from a write
+      //TODO: time to allocate ALL THE WAY up the rpos
+  }
+  if(!buf->data[0]) // if 0 is the link, then we are writing
+  {
+    d64_write(buf);
+    //TODO: update your side sector to point to this new data sec
+  }
+  else
+  {
+    if(buf->dirty)
+    {
+      if (image_write(buf->pvt.d64.part,
+                      sector_offset(buf->pvt.d64.part,
+                                    buf->pvt.d64.track,
+                                    buf->pvt.d64.sector),
+                                    buf->data, 256, 1)) {
+        free_buffer(buf);
+        return 1;
+      }
+      mark_buffer_clean(buf);
+    }
+    d64_read(buf);  // move to the next readable sector
+    mark_write_buffer(buf);
+  }
+}
 
 static void d64_format(uint8_t part, uint8_t *name, uint8_t *id) {
   buffer_t *buf;
