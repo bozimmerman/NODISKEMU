@@ -216,7 +216,7 @@ typedef struct dh_s {
 /* This enum must match the struct param_s below! */
 typedef enum { DIR_TRACK = 0, DIR_START_SECTOR,
                LAST_TRACK, LABEL_OFFSET, ID_OFFSET,
-               FILE_INTERLEAVE, DIR_INTERLEAVE
+               FILE_INTERLEAVE, DIR_INTERLEAVE, USE_SUPER_SIDE_SECTOR
                /* , FORMAT_FUNCTION */ } param_t;
 
 /**
@@ -241,6 +241,7 @@ struct param_s {
   uint8_t id_offset;
   uint8_t file_interleave;
   uint8_t dir_interleave;
+  uint8_t use_super_side_sector;
   // Insert new fields here, otherwise get_param will fail!
   void    (*format_function)(uint8_t part, struct buffer_s *buf, uint8_t *name, uint8_t *idbuf);
 };

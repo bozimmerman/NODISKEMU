@@ -121,27 +121,27 @@ static void format_dnp_image(uint8_t part, buffer_t *buf, uint8_t *name, uint8_t
 /* ------------------------------------------------------------------------- */
 
 static const PROGMEM struct param_s d41param = {
-  18, 1, 35, 0x90, 0xa2, 10, 3, format_d41_image
+  18, 1, 35, 0x90, 0xa2, 10, 3, 0, format_d41_image
 };
 
 static const PROGMEM struct param_s d71param = {
-  18, 1, 70, 0x90, 0xa2, 6, 3, format_d71_image
+  18, 1, 70, 0x90, 0xa2, 6, 3, 0, format_d71_image
 };
 
 static const PROGMEM struct param_s d81param = {
-  40, 3, 80, 0x04, 0x16, 1, 1, format_d81_image
+  40, 3, 80, 0x04, 0x16, 1, 1, 1, format_d81_image
 };
 
 static const PROGMEM struct param_s dnpparam = {
-  1, 1, 0, DNP_LABEL_OFFSET, DNP_ID_OFFSET, 1, 1, format_dnp_image
+  1, 1, 0, DNP_LABEL_OFFSET, DNP_ID_OFFSET, 1, 1, 1, format_dnp_image
 };
 
 static const PROGMEM struct param_s d80param = {
-  39, 1, 77, 6, 0x18, 5, 3, format_d80_image
+  39, 1, 77, 6, 0x18, 5, 3, 0, format_d80_image
 };
 
 static const PROGMEM struct param_s d82param = {
-  39, 1, 154, 6, 0x18, 5, 3, format_d82_image
+  39, 1, 154, 6, 0x18, 5, 3, 1, format_d82_image
 };
 
 
@@ -1185,15 +1185,14 @@ static uint8_t d64_read(buffer_t *buf) {
  */
 static uint8_t d64_seek(buffer_t *buf, uint32_t position, uint8_t index) {
   // everything here is 0 based!
+  const uint8_t imageType = partition[buf->pvt.d64.part].imagetype;
+  const uint8_t use_sss = get_param(buf->pvt.d64.part, USE_SUPER_SIDE_SECTOR);
+
   buf->read    = 0;
-  if(position+index >= 182880) //TODO: magic number for non 8250 rels
-  {
-    set_error(ERROR_RECORD_MISSING);
-    return 1;
-  }
   buf->rpos = position+index;
   uint32_t sector_index = position / 254;
-  uint8_t sidesector_no = sector_index / 120;
+  uint8_t ssector_index = sector_index / 720;
+  uint8_t sidesector_no = (use_sss ? (ssector_index % 720) : sector_index) / 120;
   uint8_t sidesector_pos = ((sector_index % 120) * 2) + 0x10;
   memset(buf->data,0,2);
   buf->data[2] = 13;
@@ -1208,10 +1207,16 @@ static uint8_t d64_seek(buffer_t *buf, uint32_t position, uint8_t index) {
   if (checked_read_full(buf->pvt.d64.part, buf->pvt.d64.dh.track, buf->pvt.d64.dh.sector, (buf->pvt.d64.dh.entry * 32) + DIR_OFS_SIDE_TRACK,
                         link_lookup, 2, ERROR_RECORD_MISSING))
     return 1;
-  if(partition[buf->pvt.d64.part].imagetype == D64_TYPE_D82)
+  if(use_sss)
   {
-      //TODO: directly read the correct super side sector link.  You have the SSS t&s in link_lookup
-
+      if (checked_read_full(buf->pvt.d64.part,link_lookup[0], link_lookup[1], ssector_index * 2,
+                            link_lookup, 2, ERROR_RECORD_MISSING))
+        return 1;
+      if(!link_lookup[0])
+      {
+          set_error(ERROR_RECORD_MISSING);
+          return 1;
+      }
   }
   while(sidesector_no > 0) {
       if (checked_read_full(buf->pvt.d64.part, link_lookup[0], link_lookup[1], 0, link_lookup, 2, ERROR_RECORD_MISSING))
@@ -1241,6 +1246,10 @@ static uint8_t d64_seek(buffer_t *buf, uint32_t position, uint8_t index) {
       return 1;
   }
   return 0; // it exists!
+}
+
+static uint8_t d64_create_next_sector(buffer_t *buf) {
+
 }
 
 /**
@@ -1702,16 +1711,30 @@ static int d64_open_create(path_t *path, cbmdirent_t *dent, uint8_t type, buffer
     if (allocate_sector(path->part,st,ss))
       return 1;
 
-    if(partition[path->part].imagetype == D64_TYPE_D82)
-    {
-        //TODO: make the SUPER side sector instead
-    }
-
+    uint8_t data[256];
+    const uint8_t imageType = partition[path->part].imagetype;
+    const uint8_t use_sss = get_param(path->part, USE_SUPER_SIDE_SECTOR);
     ops_scratch[DIR_OFS_SIDE_TRACK]  = st;
     ops_scratch[DIR_OFS_SIDE_SECTOR] = ss;
-    ops_scratch[DIR_OFS_RECORD_LEN] = recordlen;
+    if(use_sss)
+    {
+      uint8_t sst, sss;
+      if (get_first_sector(path->part,&sst,&sss))
+        return 1;
 
-    uint8_t data[256];
+      if (allocate_sector(path->part,sst,sss))
+        return 1;
+      memset(data,0,256);
+      data[0] = st;
+      data[1] = ss;
+      if(image_write(path->part, sector_offset(path->part, sst, sss), data, 256, 1))
+        return 1;
+
+      ops_scratch[DIR_OFS_SIDE_TRACK]  = sst;
+      ops_scratch[DIR_OFS_SIDE_SECTOR] = sss;
+    }
+
+    ops_scratch[DIR_OFS_RECORD_LEN] = recordlen;
 
     // write first side sector;
     memset(data,0,256);
@@ -1723,8 +1746,6 @@ static int d64_open_create(path_t *path, cbmdirent_t *dent, uint8_t type, buffer
     data[0x11] = s;
     if(image_write(path->part, sector_offset(path->part, st, ss), data, 256, 1))
       return 1;
-
-    //TODO: create either the super side sector.
   }
 
   /* Write the directory entry */
@@ -2246,16 +2267,57 @@ static void format_d80_image(uint8_t part, buffer_t *buf, uint8_t *name, uint8_t
 }
 
 static void format_d82_image(uint8_t part, buffer_t *buf, uint8_t *name, uint8_t *idbuf) {
-}
   // TODO: implement D82 format
+}
 
+static uint8_t d64_alloc_in_ss(buffer_t *buf, uint8_t sector_index, uint8_t t, uint8_t s)
+{
+  const uint8_t imageType = partition[buf->pvt.d64.part].imagetype;
+  const uint8_t use_sss = get_param(buf->pvt.d64.part, USE_SUPER_SIDE_SECTOR);
+  uint8_t ssector_index = sector_index / 720;
+  uint8_t sidesector_no = (use_sss ? (ssector_index % 720) : sector_index) / 120;
+  uint8_t sidesector_pos = ((sector_index % 120) * 2) + 0x10;
+  uint8_t link_lookup[2];
+  if (checked_read_full(buf->pvt.d64.part, buf->pvt.d64.dh.track, buf->pvt.d64.dh.sector, (buf->pvt.d64.dh.entry * 32) + DIR_OFS_SIDE_TRACK,
+                        link_lookup, 2, ERROR_ILLEGAL_TS_LINK))
+    return 1;
+  //TODO: GET THERE -- find
+
+}
 
 static void d64_readwrite(buffer_t *buf)
 {
   if(!buf->read && buf->rpos)
   {
-      // this *must* have been called from a write
+      // this *must* have been called from a write, since read is 0, right?
       //TODO: time to allocate ALL THE WAY up the rpos
+      const uint8_t imageType = partition[buf->pvt.d64.part].imagetype;
+      const uint8_t use_sss = get_param(buf->pvt.d64.part, USE_SUPER_SIDE_SECTOR);
+      uint8_t sec_index = buf->rpos % 254;
+      uint32_t position = buf->rpos - sec_index;
+      uint32_t sector_index = position / 254;
+      if(buf->blocks == 0)
+        buf->blocks = 2;
+      if (checked_read_full(buf->pvt.d64.part, buf->pvt.d64.dh.track, buf->pvt.d64.dh.sector, (buf->pvt.d64.dh.entry * 32) + DIR_OFS_TRACK,
+                            buf->data, 2, ERROR_ILLEGAL_TS_LINK))
+        return 1;
+      buf->pvt.d64.track=buf->data[0];
+      buf->pvt.d64.sector=buf->data[1];
+      for(uint16_t s=0;s<sector_index;s++)
+      {
+          if(!buf->data[0])
+          {
+              d64_write(buf);
+              buf->pvt.d64.track=buf->data[0];
+              buf->pvt.d64.sector=buf->data[1];
+              if(d64_alloc_sec(buf,s,buf->pvt.d64.track, buf->pvt.d64.sector))
+                return 1;
+          }
+          else
+            d64_read(buf);
+      }
+      buf->rpos = 0; // clear the rpos bit
+      // keep buf->read 0, because still nothing to read!
   }
   if(!buf->data[0]) // if 0 is the link, then we are writing
   {
@@ -2276,6 +2338,7 @@ static void d64_readwrite(buffer_t *buf)
       }
       mark_buffer_clean(buf);
     }
+    //TODO: the following messes up the link to the FIRST track/sec
     d64_read(buf);  // move to the next readable sector
     mark_write_buffer(buf);
   }
