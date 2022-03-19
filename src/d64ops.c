@@ -2322,7 +2322,8 @@ static void d64_readwrite(buffer_t *buf)
   if(!buf->data[0]) // if 0 is the link, then we are writing
   {
     d64_write(buf);
-    //TODO: update your side sector to point to this new data sec
+    if(d64_alloc_sec(buf,0,buf->pvt.d64.track, buf->pvt.d64.sector))
+      return 1;
   }
   else
   {
