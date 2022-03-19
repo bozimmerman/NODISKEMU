@@ -2270,17 +2270,48 @@ static void format_d82_image(uint8_t part, buffer_t *buf, uint8_t *name, uint8_t
   // TODO: implement D82 format
 }
 
-static uint8_t d64_alloc_in_ss(buffer_t *buf, uint8_t sector_index, uint8_t t, uint8_t s)
+static uint8_t d64_alloc_in_ss(buffer_t *buf, uint8_t t, uint8_t s)
 {
   const uint8_t imageType = partition[buf->pvt.d64.part].imagetype;
   const uint8_t use_sss = get_param(buf->pvt.d64.part, USE_SUPER_SIDE_SECTOR);
-  uint8_t ssector_index = sector_index / 720;
-  uint8_t sidesector_no = (use_sss ? (ssector_index % 720) : sector_index) / 120;
-  uint8_t sidesector_pos = ((sector_index % 120) * 2) + 0x10;
   uint8_t link_lookup[2];
   if (checked_read_full(buf->pvt.d64.part, buf->pvt.d64.dh.track, buf->pvt.d64.dh.sector, (buf->pvt.d64.dh.entry * 32) + DIR_OFS_SIDE_TRACK,
                         link_lookup, 2, ERROR_ILLEGAL_TS_LINK))
     return 1;
+  uint8_t ss_counter = 0;
+  uint8_t sss_ts[2] = {link_lookup[0], link_lookup[1]};
+  uint8_t sec_buf[256];
+  while(ss_counter++ < (use_sss ? 127 : 1))
+  {
+    if(use_sss)
+    {
+      if (checked_read_full(buf->pvt.d64.part, sss_ts[0], sss_ts[1], ss_counter * 2,
+                            link_lookup, 2, ERROR_ILLEGAL_TS_LINK))
+        return 1;
+    }
+    // ok, both sides are looking at a proper side sector start in link_lookup
+    for(int stn = 0; stn < 6; stn++)
+    {
+      if (checked_read_full(buf->pvt.d64.part, link_lookup[0], link_lookup[1], 0,
+                            sec_buf, 256, ERROR_ILLEGAL_TS_LINK))
+        return 1;
+      for(int idx = 16;idx < 256;idx += 2)
+      {
+        if(sec_buf[idx] == 0) {
+          sec_buf[idx] = t;
+          sec_buf[idx] = s;
+          if (image_write(buf->pvt.d64.part, sector_offset(buf->pvt.d64.part, link_lookup[0], link_lookup[1]),
+                          sec_buf, 256, 0))
+            return 1;
+          return 0;
+        }
+      }
+      if((sec_buf[0] == 0) && (stn < 5))
+      {
+        // make new side sector
+      }
+    }
+  }
   //TODO: GET THERE -- find
 
 }
@@ -2310,19 +2341,19 @@ static void d64_readwrite(buffer_t *buf)
               d64_write(buf);
               buf->pvt.d64.track=buf->data[0];
               buf->pvt.d64.sector=buf->data[1];
-              if(d64_alloc_sec(buf,s,buf->pvt.d64.track, buf->pvt.d64.sector))
+              if(d64_alloc_sec(buf,buf->pvt.d64.track, buf->pvt.d64.sector))
                 return 1;
           }
           else
             d64_read(buf);
       }
       buf->rpos = 0; // clear the rpos bit
-      // keep buf->read 0, because still nothing to read!
+      // keep buf->read = 0, because still nothing to read!
   }
   if(!buf->data[0]) // if 0 is the link, then we are writing
   {
     d64_write(buf);
-    if(d64_alloc_sec(buf,0,buf->pvt.d64.track, buf->pvt.d64.sector))
+    if(d64_alloc_sec(buf,buf->pvt.d64.track, buf->pvt.d64.sector))
       return 1;
   }
   else
