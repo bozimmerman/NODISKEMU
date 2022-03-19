@@ -2274,25 +2274,36 @@ static uint8_t d64_alloc_in_ss(buffer_t *buf, uint8_t t, uint8_t s)
 {
   const uint8_t imageType = partition[buf->pvt.d64.part].imagetype;
   const uint8_t use_sss = get_param(buf->pvt.d64.part, USE_SUPER_SIDE_SECTOR);
-  uint8_t link_lookup[2];
+  uint8_t sec_buf[256];
   if (checked_read_full(buf->pvt.d64.part, buf->pvt.d64.dh.track, buf->pvt.d64.dh.sector, (buf->pvt.d64.dh.entry * 32) + DIR_OFS_SIDE_TRACK,
-                        link_lookup, 2, ERROR_ILLEGAL_TS_LINK))
+                        sec_buf, 2, ERROR_ILLEGAL_TS_LINK))
     return 1;
   uint8_t ss_counter = 0;
-  uint8_t sss_ts[2] = {link_lookup[0], link_lookup[1]};
-  uint8_t sec_buf[256];
+  uint8_t sss_ts[2] = {sec_buf[0], sec_buf[1]};
   while(ss_counter++ < (use_sss ? 127 : 1))
   {
     if(use_sss)
     {
       if (checked_read_full(buf->pvt.d64.part, sss_ts[0], sss_ts[1], ss_counter * 2,
-                            link_lookup, 2, ERROR_ILLEGAL_TS_LINK))
+                            sec_buf, 2, ERROR_ILLEGAL_TS_LINK))
         return 1;
+      if(sec_buf[0] == 0)
+      {
+        //TODO: we need a whole new side-sector branch
+        // and the first data sector is the winner.
+      }
     }
     // ok, both sides are looking at a proper side sector start in link_lookup
     for(int stn = 0; stn < 6; stn++)
     {
-      if (checked_read_full(buf->pvt.d64.part, link_lookup[0], link_lookup[1], 0,
+      uint_8 sst = sec_buf[0];
+      uint_8 sss = sec_buf[1];
+      if((sst == 0)&&(stn > 0)) //the 0th (first) side sector always exists, because LAW
+      {
+        //TODO: make new side sector in this branch
+        //and the first link wins!
+      }
+      if (checked_read_full(buf->pvt.d64.part, sst, sss, 0,
                             sec_buf, 256, ERROR_ILLEGAL_TS_LINK))
         return 1;
       for(int idx = 16;idx < 256;idx += 2)
@@ -2300,19 +2311,16 @@ static uint8_t d64_alloc_in_ss(buffer_t *buf, uint8_t t, uint8_t s)
         if(sec_buf[idx] == 0) {
           sec_buf[idx] = t;
           sec_buf[idx] = s;
-          if (image_write(buf->pvt.d64.part, sector_offset(buf->pvt.d64.part, link_lookup[0], link_lookup[1]),
+          if (image_write(buf->pvt.d64.part, sector_offset(buf->pvt.d64.part, sst, sss),
                           sec_buf, 256, 0))
             return 1;
           return 0;
         }
       }
-      if((sec_buf[0] == 0) && (stn < 5))
-      {
-        // make new side sector
-      }
     }
   }
-  //TODO: GET THERE -- find
+
+  //TODO: No More record space, like, at all, anywhere.  You lose.  Throw an error.
 
 }
 
