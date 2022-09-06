@@ -36,6 +36,8 @@ void uart_init(void);
 unsigned char uart_getc(void);
 void uart_putc(char c);
 void uart_puthex(uint8_t num);
+void uart_puthex32(uint32_t num);
+void uart_puthex16(uint16_t num);
 void uart_trace(void *ptr, uint16_t start, uint16_t len);
 void uart_flush(void);
 void uart_puts_P(const char *text);
@@ -51,6 +53,8 @@ void uart_putcrlf(void);
 #define uart_getc()    0
 #define uart_putc(x)   do {} while(0)
 #define uart_puthex(x) do {} while(0)
+#define uart_puthex16(x) do {} while(0)
+#define uart_puthex32(x) do {} while(0)
 #define uart_flush()   do {} while(0)
 #define uart_puts_P(x) do {} while(0)
 #define uart_putcrlf() do {} while(0)

@@ -90,6 +90,7 @@ typedef struct buffer_s {
   uint8_t position;
   uint8_t secondary;
   uint8_t recordlen;
+  uint8_t recno;
   union
   {
     uint32_t fptr;  // FIXME: Missing from doc comment

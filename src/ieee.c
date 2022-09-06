@@ -527,8 +527,8 @@ void ieee488_ListenLoop(uint8_t action, uint8_t sa) {
   if (sa == 15)
     command_received = true;
 
-  printf("LL %d\r\n", sa);
-
+  //printf("LL %d\r\n", sa);
+  uint8_t writeCount = 0;
   for (;;) {
     BusSignals = ieee488_RxByte(&c);  // Read byte from IEEE bus
 
@@ -553,23 +553,31 @@ void ieee488_ListenLoop(uint8_t action, uint8_t sa) {
       buf = find_buffer(sa);
     }
 
-    buf->data[buf->position] = c;
-    mark_buffer_dirty(buf);
+    if((!buf->recordlen) // record overflow check
+    &&(++writeCount>buf->recordlen)) {
+      writeCount--;
+      set_error_ts(ERROR_RECORD_OVERFLOW,0,0);
+    } else { // normal happy writing
+      if(buf->rpos != 0) {
+        if (buf->refill(buf)) { // this should ONLY set the buffer correctly
+          uart_puts_P(PSTR("refill abort2\r\n"));
+          ieee488_IgnoreBytes();
+          return;
+        }
+      }
+      buf->data[buf->position] = c;
+      mark_buffer_dirty(buf);
 
-#if DEBUG_BUS_DATA
-    uart_puthex(c); uart_putc(' ');
-#endif
+      if (buf->lastused < buf->position) buf->lastused = buf->position;
+      buf->position++;
 
-    if (buf->lastused < buf->position) buf->lastused = buf->position;
-    buf->position++;
-
-    // Mark buffer for flushing if position wrapped
-    if (buf->position == 0) buf->mustflush = 1;
-
+      // Mark buffer for flushing if position wrapped
+      if (buf->position == 0) buf->mustflush = 1;
+    }
     // REL files must be syncronized on EOI
     if (buf->recordlen && BusSignals == RX_EOI) {
       if (buf->refill(buf)) {
-        uart_puts_P(PSTR("refill abort2\r\n"));
+        uart_puts_P(PSTR("refill abort3\r\n"));
         ieee488_IgnoreBytes();
         return;
       }
@@ -663,7 +671,7 @@ void ieee488_TalkLoop(uint8_t sa) {
       // Listeners have received our byte
 
 #if DEBUG_BUS_DATA
-      uart_puthex(c); uart_putc(' ');
+      //uart_puthex(c); uart_putc(' ');
 #endif
 
     } while (buf->position++ < buf->lastused);
@@ -791,7 +799,7 @@ void handle_ieee488(void) {
     Device = cmd & 0b00011111;
     sa     = cmd & 0b00001111;
 
-    uart_puthex(cmd); uart_putc(' ');
+    //uart_puthex(cmd); uart_putc(' ');
 
     if (cmd == IEEE_UNLISTEN)             // UNLISTEN
       ieee488_Unlisten();
