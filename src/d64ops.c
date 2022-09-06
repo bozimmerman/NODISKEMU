@@ -1185,7 +1185,6 @@ static uint8_t d64_read(buffer_t *buf) {
  */
 static uint8_t d64_seek(buffer_t *buf, uint32_t position, uint8_t index) {
   // everything here is 0 based!
-  const uint8_t imageType = partition[buf->pvt.d64.part].imagetype;
   const uint8_t use_sss = get_param(buf->pvt.d64.part, USE_SUPER_SIDE_SECTOR);
 
   buf->read    = 0;
@@ -1246,10 +1245,6 @@ static uint8_t d64_seek(buffer_t *buf, uint32_t position, uint8_t index) {
       return 1;
   }
   return 0; // it exists!
-}
-
-static uint8_t d64_create_next_sector(buffer_t *buf) {
-
 }
 
 /**
@@ -1712,18 +1707,19 @@ static int d64_open_create(path_t *path, cbmdirent_t *dent, uint8_t type, buffer
       return 1;
 
     uint8_t data[256];
-    const uint8_t imageType = partition[path->part].imagetype;
     const uint8_t use_sss = get_param(path->part, USE_SUPER_SIDE_SECTOR);
     ops_scratch[DIR_OFS_SIDE_TRACK]  = st;
     ops_scratch[DIR_OFS_SIDE_SECTOR] = ss;
     if(use_sss)
     {
-      uint8_t sst, sss;
-      if (get_first_sector(path->part,&sst,&sss))
+      uint8_t sst=st;
+      uint8_t sss=ss;
+      if (get_next_sector(path->part,&sst,&sss))
         return 1;
 
       if (allocate_sector(path->part,sst,sss))
         return 1;
+
       memset(data,0,256);
       data[0] = st;
       data[1] = ss;
@@ -1795,6 +1791,190 @@ static void d64_open_write(path_t *path, cbmdirent_t *dent, uint8_t type, buffer
   d64_open_create(path, dent, type, buf, -1);
 }
 
+static uint8_t d64_alloc_in_ss(buffer_t *buf, uint8_t t, uint8_t s)
+{
+  const uint8_t use_sss = get_param(buf->pvt.d64.part, USE_SUPER_SIDE_SECTOR);
+  const uint8_t part = buf->pvt.d64.part;
+  uint8_t sec_buf[256];
+  if (checked_read_full(part, buf->pvt.d64.dh.track, buf->pvt.d64.dh.sector, (buf->pvt.d64.dh.entry * 32) + DIR_OFS_SIDE_TRACK,
+                        sec_buf, 2, ERROR_ILLEGAL_TS_LINK))
+    return 1;
+  uint16_t sssdex=0;
+  uint8_t ssssec[2] = {sec_buf[0], sec_buf[1] };
+  if(use_sss)
+  {
+    if (checked_read_full(part, sec_buf[0], sec_buf[1], 0,
+                          sec_buf, 256, ERROR_ILLEGAL_TS_LINK))
+      return 1;
+    for(;sssdex<256;sssdex+=2)
+      if(sec_buf[sssdex] == 0)
+        break;
+    sec_buf[0] = sec_buf[sssdex-2];
+    sec_buf[1] = sec_buf[sssdex-1];
+  }
+  // get first side sector to find the last one
+  if (checked_read_full(part, sec_buf[0], sec_buf[1], 0,
+                        sec_buf, 16, ERROR_ILLEGAL_TS_LINK))
+    return 1;
+  uint8_t ssec[2] = {sec_buf[14], sec_buf[15] };
+  uint8_t ss_last_dex=0;
+  for(;ss_last_dex<5;ss_last_dex++)
+    if(sec_buf[4 + (ss_last_dex*2) +2] == 0)
+    {
+      ssec[0]=sec_buf[4 + (ss_last_dex*2)];
+      ssec[1]=sec_buf[4 + (ss_last_dex*2)+1];
+      break;
+    }
+  // now we have the last side sector.  look for an opening...
+  if (checked_read_full(part, ssec[0], ssec[1], 0,
+                        sec_buf, 256, ERROR_ILLEGAL_TS_LINK))
+    return 1;
+  for(int idx = 16;idx < 256;idx += 2)
+  {
+    if(sec_buf[idx] == 0) {
+      sec_buf[idx] = t;
+      sec_buf[idx+1] = s;
+      if(sec_buf[1]<idx+1)
+        sec_buf[1] = (uint8_t)(idx+1);
+      if (image_write(part, sector_offset(part, ssec[0], ssec[1]),
+                      sec_buf, 256, 0))
+        return 1;
+      return 0;
+    }
+  }
+  if(ss_last_dex == 5)
+  {
+    if(use_sss)
+    {
+      if (checked_read_full(part, ssssec[0], ssssec[1], 0,
+                            sec_buf, 256, ERROR_ILLEGAL_TS_LINK))
+        return 1;
+      for(;sssdex<256;sssdex+=2)
+        if(sec_buf[sssdex] == 0)
+        {
+          uint8_t st=ssssec[0];
+          uint8_t ss=ssssec[1];
+          if (get_next_sector(part,&st,&ss))
+            return 1;
+          if (allocate_sector(part,st,ss))
+            return 1;
+          buf->pvt.d64.blocks++;
+          sec_buf[sssdex]=st;
+          sec_buf[sssdex+1]=ss;
+          if(image_write(part, sector_offset(part, ssssec[0], ssssec[1]), sec_buf, 256, 1))
+            return 1;
+          // write first side sector in this chain;
+          memset(sec_buf,0,256);
+          sec_buf[1] = 0x11;
+          sec_buf[3] = buf->recordlen;
+          sec_buf[4] = st;
+          sec_buf[5] = ss;
+          sec_buf[0x10] = t;
+          sec_buf[0x11] = s;
+          if(image_write(part, sector_offset(part, st, ss), sec_buf, 256, 1))
+            return 1;
+          return 0; // all done!
+        }
+    }
+    set_error(ERROR_DISK_FULL); // is this correct for no more rel file record space?!
+    return 1;
+  }
+  else
+  {
+    uint8_t st = ssec[0];
+    uint8_t ss = ssec[1];
+    if (get_next_sector(part,&st,&ss))
+      return 1;
+    if (allocate_sector(part,st,ss))
+      return 1;
+    buf->pvt.d64.blocks++;
+    // its weird, but first step is to update the sec we have buffered
+    memset(sec_buf,16,240);
+    const uint8_t ss_offset = 4+(ss_last_dex*2)+2;
+    sec_buf[ss_offset]=st; // add the new side sector link
+    sec_buf[ss_offset+1]=ss;
+    if(image_write(part, sector_offset(part, ssec[0], ssec[1]), sec_buf, 256, 1))
+      return 1;
+    // NOW we can write the new side sector!
+    sec_buf[0] = 0;
+    sec_buf[1] = 0x11;
+    sec_buf[2] = ss_last_dex+1;
+    sec_buf[0x10] = t;
+    sec_buf[0x11] = s;
+    if(image_write(part, sector_offset(part, st, ss), sec_buf, 256, 1))
+      return 1;
+    // now all that's left is updating every single SS that came before, starting with 0
+    for(uint8_t prev_ss_dex=0;prev_ss_dex<ss_last_dex;prev_ss_dex++)
+    {
+      const uint8_t fst = sec_buf[4+(prev_ss_dex*2)];
+      const uint8_t fss = sec_buf[4+(prev_ss_dex*2)+1];
+      if(image_write(part, sector_offset(part, fst, fss)+ss_offset, sec_buf+ss_offset, 2, 1))
+        return 1;
+    }
+  }
+  return 0;
+}
+
+static uint8_t d64_readwrite(buffer_t *buf)
+{
+  if(!buf->read && buf->rpos)
+  {
+      // this *must* have been called from a write, since read is 0, right?
+      const uint8_t use_sss = get_param(buf->pvt.d64.part, USE_SUPER_SIDE_SECTOR);
+      uint8_t sec_index = buf->rpos % 254;
+      uint32_t position = buf->rpos - sec_index;
+      uint32_t sector_index = position / 254;
+      if(buf->pvt.d64.blocks == 0)
+        buf->pvt.d64.blocks = use_sss ? 2 : 1; // d64_write_cleanup also adds one
+      if (checked_read_full(buf->pvt.d64.part, buf->pvt.d64.dh.track, buf->pvt.d64.dh.sector, (buf->pvt.d64.dh.entry * 32) + DIR_OFS_TRACK,
+                            buf->data, 2, ERROR_ILLEGAL_TS_LINK))
+        return 1;
+      buf->pvt.d64.track=buf->data[0];
+      buf->pvt.d64.sector=buf->data[1];
+      for(uint16_t s=0;s<sector_index;s++)
+      {
+          if(!buf->data[0])
+          {
+              d64_write(buf);
+              buf->pvt.d64.track=buf->data[0];
+              buf->pvt.d64.sector=buf->data[1];
+              if(d64_alloc_in_ss(buf,buf->pvt.d64.track, buf->pvt.d64.sector))
+                return 1;
+          }
+          else
+            d64_read(buf);
+      }
+      buf->rpos = 0; // clear the rpos bit
+      buf->position += sec_index; // is this right?
+      // keep buf->read = 0, because still nothing to read!
+      return 0; // nothing left to do?
+  }
+  if(!buf->data[0]) // if 0 is the link, then we are writing
+  {
+    d64_write(buf);
+    if(d64_alloc_in_ss(buf,buf->pvt.d64.track, buf->pvt.d64.sector))
+      return 1;
+  }
+  else
+  {
+    if(buf->dirty)
+    {
+      if (image_write(buf->pvt.d64.part,
+                      sector_offset(buf->pvt.d64.part,
+                                    buf->pvt.d64.track,
+                                    buf->pvt.d64.sector),
+                                    buf->data, 256, 1)) {
+        free_buffer(buf);
+        return 1;
+      }
+      mark_buffer_clean(buf);
+    }
+    d64_read(buf);  // move to the next readable sector from the current one
+    mark_write_buffer(buf);
+  }
+  return 0;
+}
+
 static void d64_open_rel(path_t *path, cbmdirent_t *dent, buffer_t *buf, uint8_t length, uint8_t mode) {
   // path: part, dxx.track, dxx.sector- of First dir entry
   // dent: name, blocksize, remainder, pvt.dxx.dh: track, sector, entry# of dile
@@ -1803,8 +1983,8 @@ static void d64_open_rel(path_t *path, cbmdirent_t *dent, buffer_t *buf, uint8_t
   if(mode == OPEN_MODIFY)
   {
     // the file already exists
-    if((d64_open_read(path, dent, buf))
-    ||(d64_mod_for_write(path, dent, buf)))
+    d64_open_read(path, dent, buf);
+    if(d64_mod_for_write(path, dent, buf))
     {
       set_error(ERROR_NO_CHANNEL);
       return;
@@ -2268,120 +2448,6 @@ static void format_d80_image(uint8_t part, buffer_t *buf, uint8_t *name, uint8_t
 
 static void format_d82_image(uint8_t part, buffer_t *buf, uint8_t *name, uint8_t *idbuf) {
   // TODO: implement D82 format
-}
-
-static uint8_t d64_alloc_in_ss(buffer_t *buf, uint8_t t, uint8_t s)
-{
-  const uint8_t imageType = partition[buf->pvt.d64.part].imagetype;
-  const uint8_t use_sss = get_param(buf->pvt.d64.part, USE_SUPER_SIDE_SECTOR);
-  uint8_t sec_buf[256];
-  if (checked_read_full(buf->pvt.d64.part, buf->pvt.d64.dh.track, buf->pvt.d64.dh.sector, (buf->pvt.d64.dh.entry * 32) + DIR_OFS_SIDE_TRACK,
-                        sec_buf, 2, ERROR_ILLEGAL_TS_LINK))
-    return 1;
-  uint8_t ss_counter = 0;
-  uint8_t sss_ts[2] = {sec_buf[0], sec_buf[1]};
-  while(ss_counter++ < (use_sss ? 127 : 1))
-  {
-    if(use_sss)
-    {
-      if (checked_read_full(buf->pvt.d64.part, sss_ts[0], sss_ts[1], ss_counter * 2,
-                            sec_buf, 2, ERROR_ILLEGAL_TS_LINK))
-        return 1;
-      if(sec_buf[0] == 0)
-      {
-        //TODO: we need a whole new side-sector branch
-        // and the first data sector is the winner.
-      }
-    }
-    // ok, both sides are looking at a proper side sector start in link_lookup
-    for(int stn = 0; stn < 6; stn++)
-    {
-      uint_8 sst = sec_buf[0];
-      uint_8 sss = sec_buf[1];
-      if((sst == 0)&&(stn > 0)) //the 0th (first) side sector always exists, because LAW
-      {
-        //TODO: make new side sector in this branch
-        //and the first link wins!
-      }
-      if (checked_read_full(buf->pvt.d64.part, sst, sss, 0,
-                            sec_buf, 256, ERROR_ILLEGAL_TS_LINK))
-        return 1;
-      for(int idx = 16;idx < 256;idx += 2)
-      {
-        if(sec_buf[idx] == 0) {
-          sec_buf[idx] = t;
-          sec_buf[idx] = s;
-          if (image_write(buf->pvt.d64.part, sector_offset(buf->pvt.d64.part, sst, sss),
-                          sec_buf, 256, 0))
-            return 1;
-          return 0;
-        }
-      }
-    }
-  }
-
-  //TODO: No More record space, like, at all, anywhere.  You lose.  Throw an error.
-
-}
-
-static void d64_readwrite(buffer_t *buf)
-{
-  if(!buf->read && buf->rpos)
-  {
-      // this *must* have been called from a write, since read is 0, right?
-      //TODO: time to allocate ALL THE WAY up the rpos
-      const uint8_t imageType = partition[buf->pvt.d64.part].imagetype;
-      const uint8_t use_sss = get_param(buf->pvt.d64.part, USE_SUPER_SIDE_SECTOR);
-      uint8_t sec_index = buf->rpos % 254;
-      uint32_t position = buf->rpos - sec_index;
-      uint32_t sector_index = position / 254;
-      if(buf->blocks == 0)
-        buf->blocks = 2;
-      if (checked_read_full(buf->pvt.d64.part, buf->pvt.d64.dh.track, buf->pvt.d64.dh.sector, (buf->pvt.d64.dh.entry * 32) + DIR_OFS_TRACK,
-                            buf->data, 2, ERROR_ILLEGAL_TS_LINK))
-        return 1;
-      buf->pvt.d64.track=buf->data[0];
-      buf->pvt.d64.sector=buf->data[1];
-      for(uint16_t s=0;s<sector_index;s++)
-      {
-          if(!buf->data[0])
-          {
-              d64_write(buf);
-              buf->pvt.d64.track=buf->data[0];
-              buf->pvt.d64.sector=buf->data[1];
-              if(d64_alloc_sec(buf,buf->pvt.d64.track, buf->pvt.d64.sector))
-                return 1;
-          }
-          else
-            d64_read(buf);
-      }
-      buf->rpos = 0; // clear the rpos bit
-      // keep buf->read = 0, because still nothing to read!
-  }
-  if(!buf->data[0]) // if 0 is the link, then we are writing
-  {
-    d64_write(buf);
-    if(d64_alloc_sec(buf,buf->pvt.d64.track, buf->pvt.d64.sector))
-      return 1;
-  }
-  else
-  {
-    if(buf->dirty)
-    {
-      if (image_write(buf->pvt.d64.part,
-                      sector_offset(buf->pvt.d64.part,
-                                    buf->pvt.d64.track,
-                                    buf->pvt.d64.sector),
-                                    buf->data, 256, 1)) {
-        free_buffer(buf);
-        return 1;
-      }
-      mark_buffer_clean(buf);
-    }
-    //TODO: the following messes up the link to the FIRST track/sec
-    d64_read(buf);  // move to the next readable sector
-    mark_write_buffer(buf);
-  }
 }
 
 static void d64_format(uint8_t part, uint8_t *name, uint8_t *id) {
