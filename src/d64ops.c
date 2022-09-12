@@ -282,12 +282,14 @@ static uint16_t sectors_per_track(uint8_t part, uint8_t track) {
  */
 static uint8_t checked_read_full(uint8_t part, uint8_t track, uint8_t sector, uint8_t offset,
                                  uint8_t *buf, uint16_t len, uint8_t error) {
-uart_puts_P(PSTR(">CheckedReadFull:")); //TODO:BZ:DELME
+uart_puts_P(PSTR(">CReadF:")); //TODO:BZ:DELME
 uart_puthex(track);
 uart_putc(' ');
 uart_puthex(sector);
+uart_putc(' ');
+uart_puthex(offset);
 uart_putcrlf();
-
+uart_flush();
   if (track < 1 || track > get_param(part, LAST_TRACK) ||
       sector >= sectors_per_track(part, track)) {
     set_error_ts(error,track,sector);
@@ -355,6 +357,7 @@ uart_putcrlf();
     /* 1 is OK, unknown values are accepted too */
   }
 
+  uart_flush();
   return image_read(part, sector_offset(part,track,sector)+offset, buf, len);
 }
 
@@ -758,11 +761,12 @@ static uint16_t sectors_free(uint8_t part, uint8_t track) {
  * Returns 0 if successful, 1 on error.
  */
 static uint8_t allocate_sector(uint8_t part, uint8_t track, uint8_t sector) {
-uart_puts_P(PSTR(">AllocateSector:")); //TODO:BZ:DELME
+uart_puts_P(PSTR(">Alloc:")); //TODO:BZ:DELME
 uart_puthex(track);
 uart_putc(' ');
 uart_puthex(sector);
 uart_putcrlf();
+uart_flush();
   uint8_t *trackmap;
   int8_t res = is_free(part,track,sector);
 
@@ -926,7 +930,6 @@ static uint8_t get_first_sector(uint8_t part, uint8_t *track, uint8_t *sector) {
  * Returns 0 if successful or 1 if any error occured.
  */
 static uint8_t get_next_sector(uint8_t part, uint8_t *track, uint8_t *sector) {
-  uart_puts_P(PSTR(">GetNextSec\r\n")); //TODO:BZ:DELME
   if (partition[part].imagetype == D64_TYPE_DNP) {
     uint8_t newtrack = *track;
 
@@ -941,6 +944,7 @@ static uint8_t get_next_sector(uint8_t part, uint8_t *track, uint8_t *sector) {
       }
 
       if (newtrack == *track)
+uart_puts_P(PSTR(">NextSec: FAIL\r\n")); //TODO:BZ:DELME
         /* Returned to the start track -> no free sectors anywhere */
         return 1;
     }
@@ -958,6 +962,11 @@ static uint8_t get_next_sector(uint8_t part, uint8_t *track, uint8_t *sector) {
     while (!is_free(part, newtrack, newsector))
       newsector++; // will automatically wrap from 255->0
 
+uart_puts_P(PSTR(">NextSec: ")); //TODO:BZ:DELME
+uart_puthex(newtrack); //TODO:BZ:DELME
+uart_putc(' '); //TODO:BZ:DELME
+uart_puthex(newsector); //TODO:BZ:DELME
+uart_putcrlf();
     *track = newtrack;
     *sector = newsector;
 
@@ -1005,6 +1014,7 @@ static uint8_t get_next_sector(uint8_t part, uint8_t *track, uint8_t *sector) {
   if (tries == 3) {
     if (current_error == ERROR_OK)
       set_error(ERROR_DISK_FULL);
+    uart_puts_P(PSTR(">NextSec: FAIL2\r\n")); //TODO:BZ:DELME
     return 1;
   }
 
@@ -1023,6 +1033,12 @@ static uint8_t get_next_sector(uint8_t part, uint8_t *track, uint8_t *sector) {
     if (*sector >= sectors_per_track(part, *track))
       *sector = 0;
   }
+
+  uart_puts_P(PSTR(">NextSec: ")); //TODO:BZ:DELME
+  uart_puthex(*track); //TODO:BZ:DELME
+  uart_putc(' '); //TODO:BZ:DELME
+  uart_puthex(*sector); //TODO:BZ:DELME
+  uart_putcrlf();
 
   if (tries)
     return 0;
@@ -1166,10 +1182,14 @@ static uint8_t find_empty_entry(path_t *path, dh_t *dh) {
  * This is the callback used as refill for files opened for reading.
  */
 static uint8_t d64_read(buffer_t *buf) {
-  uart_puts_P(PSTR(">D64Read\r\n")); //TODO:BZ:DELME
   /* Store the current sector, used for append */
   buf->pvt.d64.track  = buf->data[0];
   buf->pvt.d64.sector = buf->data[1];
+  uart_puts_P(PSTR(">DRead: ")); //TODO:BZ:DELME
+  uart_puthex(buf->data[0]); //TODO:BZ:DELME
+  uart_putc(' '); //TODO:BZ:DELME
+  uart_puthex(buf->data[1]); //TODO:BZ:DELME
+  uart_putcrlf();
 
   if (checked_read(buf->pvt.d64.part, buf->data[0], buf->data[1], buf->data, 256, ERROR_ILLEGAL_TS_LINK)) {
     free_buffer(buf);
@@ -1190,6 +1210,28 @@ static uint8_t d64_read(buffer_t *buf) {
   return 0;
 }
 
+static uint8_t d64_flush_buf(buffer_t *buf)
+{
+  if(buf->dirty)
+  {
+    uart_puts_P(PSTR(">Flush: ")); //TODO:BZ:DELME
+    uart_puthex(buf->pvt.d64.track); //TODO:BZ:DELME
+    uart_putc(' '); //TODO:BZ:DELME
+    uart_puthex(buf->pvt.d64.sector); //TODO:BZ:DELME
+    uart_putcrlf();
+    if (image_write(buf->pvt.d64.part,
+                    sector_offset(buf->pvt.d64.part,
+                                  buf->pvt.d64.track,
+                                  buf->pvt.d64.sector),
+                                  buf->data, 256, 1)) {
+      free_buffer(buf);
+      return 1;
+    }
+    mark_buffer_clean(buf);
+  }
+  return 0;
+}
+
 /**
  * d64_seek - seek-callback
  * @buf     : target buffer
@@ -1201,89 +1243,337 @@ static uint8_t d64_read(buffer_t *buf) {
 static uint8_t d64_seek(buffer_t *buf, uint32_t position, uint8_t index) {
   // everything here is 0 based!
   const uint8_t use_sss = get_param(buf->pvt.d64.part, USE_SUPER_SIDE_SECTOR);
+  uint8_t link_lookup[2];
 
   buf->read = 0;
   buf->rpos = position+index;
-  uint32_t sector_count = position / 254;
-  uint8_t ssector_index = sector_count / 720;
-  uint8_t sidesector_no = (use_sss ? (ssector_index % 720) : sector_count) / 120;
-  uint8_t sidesector_pos = ((sector_count % 120) * 2) + 0x10;
-uart_puts_P(PSTR(">Seek:")); //TODO:BZ:DELME
-uart_puthex32(position); //TODO:BZ:DELME
-uart_putc(' ');
-uart_puthex32(sector_count); //TODO:BZ:DELME
-uart_putc(' ');
-uart_puthex(ssector_index); //TODO:BZ:DELME
-uart_putc(' ');
-uart_puthex(sidesector_no); //TODO:BZ:DELME
-uart_putc(' ');
-uart_puthex(sidesector_pos); //TODO:BZ:DELME
-uart_putcrlf(); //TODO:BZ:DELME
-  memset(buf->data,0,2);
-  buf->data[2] = 13;
-  buf->position=2;
-  buf->lastused=2;
-  if(sidesector_no > 5)
-  {
-    set_error(ERROR_RECORD_MISSING);
+  if(d64_flush_buf(buf))
     return 1;
-  }
-uart_puts_P(PSTR(">P1\r\n")); //TODO:BZ:DELME
-  uint8_t link_lookup[2];
-  if (checked_read_full(buf->pvt.d64.part, buf->pvt.d64.dh.track, buf->pvt.d64.dh.sector, (buf->pvt.d64.dh.entry * 32) + DIR_OFS_SIDE_TRACK,
-                        link_lookup, 2, ERROR_RECORD_MISSING))
-    return 1;
-uart_puts_P(PSTR(">P2:")); //TODO:BZ:DELME
-uart_puthex(link_lookup[0]); //TODO:BZ:DELME
-uart_putc(' '); //TODO:BZ:DELME
-uart_puthex(link_lookup[1]); //TODO:BZ:DELME
-uart_putcrlf(); //TODO:BZ:DELME
-  if(use_sss)
-  {
-      if (checked_read_full(buf->pvt.d64.part,link_lookup[0], link_lookup[1], ssector_index * 2,
-                            link_lookup, 2, ERROR_RECORD_MISSING))
-        return 1;
-      if(!link_lookup[0])
-      {
-          set_error(ERROR_RECORD_MISSING);
-          return 1;
-      }
-  }
-uart_puts_P(PSTR(">P3\r\n")); //TODO:BZ:DELME
-  while(sidesector_no > 0) {
-      if (checked_read_full(buf->pvt.d64.part, link_lookup[0], link_lookup[1], 0, link_lookup, 2, ERROR_RECORD_MISSING))
-        return 1;
-      sidesector_no--;
-  }
-uart_puts_P(PSTR(">P4\r\n")); //TODO:BZ:DELME
-  if (checked_read_full(buf->pvt.d64.part, link_lookup[0], link_lookup[1], sidesector_pos, link_lookup, 2, ERROR_RECORD_MISSING))
-    return 1;
-uart_puts_P(PSTR(">P5\r\n")); //TODO:BZ:DELME
-  if(!link_lookup[0])
-  {
-      set_error(ERROR_RECORD_MISSING);
+  // special case, because rpos == 0 == no seek done at ALL!
+  if(buf->rpos == 0) {
+    uart_puts_P(PSTR(">Seek0\n\r")); //TODO:BZ:DELME
+    if (checked_read_full(buf->pvt.d64.part, buf->pvt.d64.dh.track, buf->pvt.d64.dh.sector, (buf->pvt.d64.dh.entry * 32) + DIR_OFS_TRACK,
+                          link_lookup, 2, ERROR_RECORD_MISSING))
       return 1;
   }
-uart_puts_P(PSTR(">P6\r\n")); //TODO:BZ:DELME
+  else
+  {
+    uint32_t sector_count = position / 254;
+    uint8_t ssector_index = sector_count / 720;
+    uint8_t sidesector_no = (use_sss ? (ssector_index % 720) : sector_count) / 120;
+    uint8_t sidesector_pos = ((sector_count % 120) * 2) + 0x10;
+    uart_puts_P(PSTR(">Seek In:")); //TODO:BZ:DELME
+    uart_puthex32(position); //TODO:BZ:DELME
+    uart_putc(' ');
+    uart_puthex32(sector_count); //TODO:BZ:DELME
+    uart_putc(' ');
+    uart_puthex(ssector_index); //TODO:BZ:DELME
+    uart_putc(' ');
+    uart_puthex(sidesector_no); //TODO:BZ:DELME
+    uart_putc(' ');
+    uart_puthex(sidesector_pos); //TODO:BZ:DELME
+    uart_putcrlf(); //TODO:BZ:DELME
+    uart_flush();
+    memset(buf->data,0,2);
+    buf->data[2] = 13;
+    buf->position=2;
+    buf->lastused=2;
+    if(sidesector_no > 5)
+    {
+      set_error(ERROR_RECORD_MISSING);
+      return 1;
+    }
+    if (checked_read_full(buf->pvt.d64.part, buf->pvt.d64.dh.track, buf->pvt.d64.dh.sector, (buf->pvt.d64.dh.entry * 32) + DIR_OFS_SIDE_TRACK,
+                          link_lookup, 2, ERROR_RECORD_MISSING))
+      return 1;
+    uart_puts_P(PSTR(">P2:")); //TODO:BZ:DELME
+    uart_puthex(link_lookup[0]); //TODO:BZ:DELME
+    uart_putc(' '); //TODO:BZ:DELME
+    uart_puthex(link_lookup[1]); //TODO:BZ:DELME
+    uart_putcrlf(); //TODO:BZ:DELME
+    uart_flush();
+    if(use_sss)
+    {
+        if (checked_read_full(buf->pvt.d64.part,link_lookup[0], link_lookup[1], ssector_index * 2,
+                              link_lookup, 2, ERROR_RECORD_MISSING))
+          return 1;
+        if(!link_lookup[0])
+        {
+            set_error(ERROR_RECORD_MISSING);
+            return 1;
+        }
+    }
+    while(sidesector_no > 0) {
+        if (checked_read_full(buf->pvt.d64.part, link_lookup[0], link_lookup[1], 0, link_lookup, 2, ERROR_RECORD_MISSING))
+          return 1;
+        sidesector_no--;
+    }
+    if (checked_read_full(buf->pvt.d64.part, link_lookup[0], link_lookup[1], sidesector_pos, link_lookup, 2, ERROR_RECORD_MISSING))
+      return 1;
+    if(!link_lookup[0])
+    {
+        set_error(ERROR_RECORD_MISSING);
+        return 1;
+    }
+  }
   buf->data[0] = link_lookup[0];
   buf->data[1] = link_lookup[1];
   if(d64_read(buf))
     return 1;
-uart_puts_P(PSTR(">P7\r\n")); //TODO:BZ:DELME
   buf->rpos = 0;
   buf->mustflush = 0;
   uint8_t rec_pos = 2 + ((position+index) % 254);
   buf->position   = rec_pos;
   buf->read       = 1;
-  if(((!buf->data[0])&&(buf->data[1] <= rec_pos))
-  ||(buf->pvt.d64.blocks == 0))
+  uart_puts_P(PSTR(">Seek To:")); //TODO:BZ:DELME
+  uart_puthex(buf->pvt.d64.track); //TODO:BZ:DELME
+  uart_putc(' ');
+  uart_puthex(buf->pvt.d64.sector); //TODO:BZ:DELME
+  uart_putc(' ');
+  uart_puthex(rec_pos); //TODO:BZ:DELME
+  uart_putcrlf();
+  uart_flush();
+  if(buf->pvt.d64.blocks == 0)
   {
       set_error(ERROR_RECORD_MISSING);
       return 1;
   }
+  if((buf->data[0] == 0) && (buf->data[1] < buf->position))
+    buf->data[1] = buf->position;
   buf->recno= (position + index) / buf->recordlen;
-uart_puts_P(PSTR(">P8\r\n")); //TODO:BZ:DELME
   return 0; // it exists!
+}
+
+// 23408640 total bytes poss with SSS
+// 182880 bytes per SS trail in the SSS
+// 30480 bytes per SS node in a SS trail
+// 6 side sectors per SSS
+/**
+ * d64_force_seek - forced seek
+ * @buf     : target buffer
+ * @rpos    : byte offset to seek to
+ *
+ * Do a forced seek, creating data sectors if needed in
+ * order to get to the given position.  The butter_t buf
+ * will be updated with the correct sector data, etc.
+ */
+static uint8_t d64_force_seek(buffer_t *buf, uint32_t rpos)
+{
+  uart_puts_P(PSTR(">ForSeek:")); //TODO:BZ:DELME
+  uart_puthex32(rpos); //TODO:BZ:DELME
+  uart_putc(' '); //TODO:BZ:DELME
+  uart_puthex16((uint16_t)(rpos / buf->recordlen)); //TODO:BZ:DELME
+  uart_putc(' '); //TODO:BZ:DELME
+  uart_puthex((uint8_t)(rpos % buf->recordlen)); //TODO:BZ:DELME
+  uart_putcrlf();
+  uart_flush();
+  const uint8_t use_sss = get_param(buf->pvt.d64.part, USE_SUPER_SIDE_SECTOR);
+  const uint8_t part = buf->pvt.d64.part;
+  uint8_t ss_ts[2];
+  uint8_t sss_ts[2] = { 0, 0 };
+  uint8_t sss_buf[256];
+  uint8_t sss_dirty = FALSE;
+  uint32_t skip_rpos = 0;
+  if(skip_rpos >= rpos)
+    return d64_seek(buf, rpos / buf->recordlen, rpos % buf->recordlen);
+  if (checked_read_full(part, buf->pvt.d64.dh.track, buf->pvt.d64.dh.sector,
+                        (buf->pvt.d64.dh.entry * 32) + DIR_OFS_SIDE_TRACK,
+                        ss_ts, 2, ERROR_ILLEGAL_TS_LINK))
+    return 1;
+  int16_t sssdex = 0;
+  if(use_sss)
+  {
+    memcpy(sss_ts,ss_ts,2);
+    if (checked_read_full(part, sss_ts[0], sss_ts[1], 0,
+                          sss_buf, 256, ERROR_ILLEGAL_TS_LINK))
+      return 1;
+    // have sss, find last data block ts, counting up along the
+    // way.  If it exists, great.
+    for(sssdex = 254;sssdex>=0;sssdex-=2)
+    {
+      if(sss_buf[sssdex] != 0)
+      {
+        skip_rpos += 182880 * (sssdex/2);
+        memcpy(ss_ts,sss_buf+sssdex,2);
+        break;
+      }
+    }
+    if(sssdex<0)
+    {
+      set_error_ts(ERROR_ILLEGAL_TS_LINK,sss_ts[0], sss_ts[1]);
+      return 1;
+    }
+  }
+  if(skip_rpos >= rpos)
+    return d64_seek(buf, rpos / buf->recordlen, rpos % buf->recordlen);
+  // have the highest side sector start, now find last side sector
+  uint8_t ss_trl[16];
+  uint8_t ss_buf[256];
+  uint8_t ss_dirty = FALSE;
+  uint8_t dblk_ts[2] = { 0, 0 };
+uart_puts_P(PSTR(">FS:")); //TODO:BZ:DELME
+uart_puthex(ss_ts[0]); //TODO:BZ:DELME
+uart_putc(' '); //TODO:BZ:DELME
+uart_puthex(ss_ts[1]); //TODO:BZ:DELME
+uart_putcrlf(); //TODO:BZ:DELME
+uart_flush();
+  if (checked_read_full(part, ss_ts[0], ss_ts[1], 0,
+      ss_trl, 16, ERROR_ILLEGAL_TS_LINK))
+    return 1;
+uart_puts_P(PSTR(">FS:")); //TODO:BZ:DELME
+uart_puthex(ss_trl[4]); //TODO:BZ:DELME
+uart_putc(' '); //TODO:BZ:DELME
+uart_puthex(ss_trl[5]); //TODO:BZ:DELME
+uart_putcrlf(); //TODO:BZ:DELME
+uart_flush();
+  uint8_t trldex =0;
+  for(trldex = 14;trldex>=4;trldex-=2)
+  {
+    if(ss_trl[trldex] != 0)
+    {
+      skip_rpos += 30480 * ((trldex-4)/2);
+      memcpy(ss_ts,ss_trl+trldex,2);
+      break;
+    }
+  }
+  if(trldex<4)
+  {
+    set_error_ts(ERROR_ILLEGAL_TS_LINK,ss_ts[0], ss_ts[1]);
+    return 1;
+  }
+  if(skip_rpos >= rpos)
+    return d64_seek(buf, rpos / buf->recordlen, rpos % buf->recordlen);
+  // have the last side sector, find the last data sector now
+  if (checked_read_full(part, ss_ts[0], ss_ts[1], 0,
+                        ss_buf, 256, ERROR_ILLEGAL_TS_LINK))
+    return 1;
+  uint16_t datdex =0;
+  for(datdex = 254;datdex>=16;datdex-=2)
+  {
+    if(ss_buf[datdex] != 0)
+    {
+      skip_rpos += 254 * ((trldex-16)/2);
+      memcpy(dblk_ts,ss_buf+datdex,2);
+      break;
+    }
+  }
+  if(datdex<16)
+  {
+    set_error_ts(ERROR_ILLEGAL_TS_LINK,ss_ts[0], ss_ts[1]);
+    return 1;
+  }
+  if(skip_rpos >= rpos)
+    return d64_seek(buf, rpos / buf->recordlen, rpos % buf->recordlen);
+  // we are at the last actual sector in the rel file,
+  // now we just keep adding sectors until we are where we need to be.
+  uint32_t added_size = 0;
+  uint8_t dat_buf[256];
+  while(skip_rpos < rpos)
+  {
+    uint8_t nblk_ts[2] = { dblk_ts[0], dblk_ts[1] };
+    if (get_next_sector(part,nblk_ts,nblk_ts+1))
+      return 1;
+    if (allocate_sector(part,*nblk_ts,*(nblk_ts+1)))
+      return 1;
+    datdex+=2;
+    if(datdex >= 256)
+    {
+      datdex = 16; // this is where it will be in the new node
+      trldex += 2;
+      if((trldex >= 16) && (!use_sss))
+      {
+        set_error(ERROR_DISK_FULL); // is this correct for no more rel file record space?!
+        return 1;
+      }
+      // time for new ss node
+      uint8_t nod_ts[2] = { ss_ts[0], ss_ts[1] } ;
+      if (get_next_sector(part,nod_ts,nod_ts+1))
+        return 1;
+      if (allocate_sector(part,nod_ts[0],nod_ts[1]))
+        return 1;
+      if(trldex < 16)
+      {
+        // update the current, outgoing ss, which is now ALWAYS dirty
+        ss_buf[trldex] = nod_ts[0];
+        ss_buf[trldex+1] = nod_ts[1];
+        ss_buf[0] = nod_ts[0];
+        ss_buf[1] = nod_ts[1];
+        if(image_write(part, sector_offset(part, ss_ts[0], ss_ts[1]), ss_buf, 256, 1))
+          return 1;
+        // also update all other nodes with location of new node
+        for(uint8_t td = 4;td<trldex-2;td+=2)
+        {
+          if(image_write(part, sector_offset(part, ss_buf[td], ss_buf[td+1]), ss_buf+4, 12, 1))
+            return 1;
+        }
+      }
+      else
+      if(ss_dirty)
+      {
+        if(image_write(part, sector_offset(part, ss_ts[0], ss_ts[1]), ss_buf, 256, 1))
+          return 1;
+      }
+      ss_dirty = FALSE;
+      if(trldex >= 16) // FINALLY deal with super side sector -use_sss implied here!
+      {
+        sssdex += 2;
+        if(sssdex >= 256)
+        {
+          set_error(ERROR_DISK_FULL); // is this correct for no more rel file record space?!
+          return 1;
+        }
+        // we are going to use the previously allocated node, and go from there
+        trldex = 4; // this will be the new trail index
+        sss_buf[sssdex] = nod_ts[0];
+        sss_buf[sssdex+1] = nod_ts[1];
+        sss_dirty = TRUE;
+      }
+      ss_dirty = TRUE;
+      memcpy(ss_ts, nod_ts, 2);
+      memset(ss_buf+4, 0, 252);
+      ss_buf[0] = 0;
+      ss_buf[1] = 0x10; // point at first blk byte
+      ss_buf[4] = ss_ts[0];
+      ss_buf[5] = ss_ts[1];
+      datdex = 0x10;
+    }
+    memcpy(ss_buf+datdex,nblk_ts,2);
+    if((ss_buf[0] == 0) && (ss_buf[1] < datdex+1))
+      ss_buf[1] = datdex+1;
+    memset(dat_buf,0,256);
+    dat_buf[1] = 0xff;
+    uint8_t firstByte = 2 + (buf->recordlen - (uint8_t)(skip_rpos % buf->recordlen));
+    uint8_t laststart = 0;
+    for(uint16_t i=firstByte;i<256;i+=buf->recordlen)
+    {
+      laststart = i;
+      dat_buf[i]=0xff;
+    }
+    if(laststart + buf->recordlen >= 256)
+      dat_buf[1] = laststart;
+    if(image_write(part, sector_offset(part, nblk_ts[0], nblk_ts[1]), dat_buf, 256, 1))
+      return 1;
+    // block initialized, accomplish the link
+    if(image_write(part, sector_offset(part, dblk_ts[0], dblk_ts[1]), nblk_ts, 2, 1))
+      return 1;
+    // good job, you're done.
+    ss_dirty = TRUE;
+    added_size++;
+    memcpy(dblk_ts,nblk_ts,2);
+    skip_rpos += 254;
+  }
+  if(ss_dirty == TRUE)
+  {
+    if(image_write(part, sector_offset(part, ss_ts[0], ss_ts[1]), ss_buf, 256, 1))
+      return 1;
+  }
+  if(sss_dirty == TRUE)
+  {
+    if(image_write(part, sector_offset(part, sss_ts[0], sss_ts[1]), sss_buf, 256, 1))
+      return 1;
+  }
+  // ok, I *think* write cleanup actually takes care of the file size?
+  return d64_seek(buf, rpos / buf->recordlen, rpos % buf->recordlen);
 }
 
 /**
@@ -1298,11 +1588,11 @@ static uint8_t d64_write(buffer_t *buf) {
   savederror = 0;
   t = buf->pvt.d64.track;
   s = buf->pvt.d64.sector;
-uart_puts_P(PSTR(">D64Write:")); //TODO:BZ:DELME
-uart_puthex(t); //TODO:BZ:DELME
-uart_putc(' ');
-uart_puthex(s); //TODO:BZ:DELME
-uart_putcrlf();
+  uart_puts_P(PSTR(">D64Write:")); //TODO:BZ:DELME
+  uart_puthex(t); //TODO:BZ:DELME
+  uart_putc(' ');
+  uart_puthex(s); //TODO:BZ:DELME
+  uart_putcrlf();
 
   buf->pvt.d64.blocks++;
 
@@ -1354,10 +1644,19 @@ uart_putcrlf();
 
 static uint8_t d64_write_cleanup(buffer_t *buf) {
   uint8_t t,s;
-  uart_puts_P(PSTR(">D64WriteCleanup\r\n")); //TODO:BZ:DELME
+  uart_puts_P(PSTR(">DCleanup: ")); //TODO:BZ:DELME
+  uart_puthex(buf->pvt.d64.track); //TODO:BZ:DELME
+  uart_putc(' '); //TODO:BZ:DELME
+  uart_puthex(buf->pvt.d64.sector); //TODO:BZ:DELME
+  uart_putcrlf();
+  uart_flush();
 
-  buf->data[0] = 0;
-  buf->data[1] = buf->lastused;
+  if((buf->recordlen == 0)
+  ||((buf->data[0] == 0) && (buf->data[1] < buf->lastused)))
+  {
+    buf->data[0] = 0;
+    buf->data[1] = buf->lastused;
+  }
 
   t = buf->pvt.d64.track;
   s = buf->pvt.d64.sector;
@@ -1847,21 +2146,27 @@ static void d64_open_write(path_t *path, cbmdirent_t *dent, uint8_t type, buffer
 
 static uint8_t d64_alloc_in_ss(buffer_t *buf, uint8_t t, uint8_t s)
 {
-uart_puts_P(PSTR(">AllocSideSector:")); //TODO:BZ:DELME
-uart_puthex(t); //TODO:BZ:DELME
-uart_putc(' ');
-uart_puthex(s); //TODO:BZ:DELME
-uart_putcrlf();
+  uart_puts_P(PSTR(">AllocSS:")); //TODO:BZ:DELME
+  uart_puthex(t); //TODO:BZ:DELME
+  uart_putc(' ');
+  uart_puthex(s); //TODO:BZ:DELME
+  uart_putcrlf();
+  uart_flush();
   const uint8_t use_sss = get_param(buf->pvt.d64.part, USE_SUPER_SIDE_SECTOR);
   const uint8_t part = buf->pvt.d64.part;
   uint8_t sec_buf[256];
-  if (checked_read_full(part, buf->pvt.d64.dh.track, buf->pvt.d64.dh.sector, (buf->pvt.d64.dh.entry * 32) + DIR_OFS_SIDE_TRACK,
+  if (checked_read_full(part, buf->pvt.d64.dh.track, buf->pvt.d64.dh.sector,
+                        (buf->pvt.d64.dh.entry * 32) + DIR_OFS_SIDE_TRACK,
                         sec_buf, 2, ERROR_ILLEGAL_TS_LINK))
     return 1;
   uint16_t sssdex=0;
   uint8_t ssssec[2] = {sec_buf[0], sec_buf[1] };
   if(use_sss)
   {
+    // 23408640 total bytes poss with SSS
+    // 182880 bytes per SS trail in the SSS
+    // 30480 bytes per block in a single SS
+    // 6 side sectors per SSS
     if (checked_read_full(part, sec_buf[0], sec_buf[1], 0,
                           sec_buf, 256, ERROR_ILLEGAL_TS_LINK))
       return 1;
@@ -1877,13 +2182,18 @@ uart_putcrlf();
     return 1;
   uint8_t ssec[2] = {sec_buf[14], sec_buf[15] };
   uint8_t ss_last_dex=0;
-  for(;ss_last_dex<5;ss_last_dex++)
-    if(sec_buf[4 + (ss_last_dex*2) +2] == 0)
+  for(ss_last_dex=14;ss_last_dex>=4;ss_last_dex-=2)
+    if(sec_buf[ss_last_dex] != 0)
     {
-      ssec[0]=sec_buf[4 + (ss_last_dex*2)];
-      ssec[1]=sec_buf[4 + (ss_last_dex*2)+1];
+      ssec[0]=sec_buf[ss_last_dex];
+      ssec[1]=sec_buf[ss_last_dex+1];
       break;
     }
+  if(ss_last_dex<4)
+  {
+    set_error_ts(ERROR_ILLEGAL_TS_LINK,sec_buf[0], sec_buf[1]);
+    return 1;
+  }
   // now we have the last side sector.  look for an opening...
   if (checked_read_full(part, ssec[0], ssec[1], 0,
                         sec_buf, 256, ERROR_ILLEGAL_TS_LINK))
@@ -1974,123 +2284,30 @@ uart_putcrlf();
   return 0;
 }
 
-static uint8_t d64_flush_buf(buffer_t *buf)
-{
-  if(buf->dirty)
-  {
-    if (image_write(buf->pvt.d64.part,
-                    sector_offset(buf->pvt.d64.part,
-                                  buf->pvt.d64.track,
-                                  buf->pvt.d64.sector),
-                                  buf->data, 256, 1)) {
-      free_buffer(buf);
-      return 1;
-    }
-    mark_buffer_clean(buf);
-  }
-  return 0;
-}
-
-static uint8_t d64_rel_position_buf(buffer_t *buf, uint32_t rpos)
-{
-  // this *must* have been called from a write, since read is 0, right?
-  const uint8_t use_sss = get_param(buf->pvt.d64.part, USE_SUPER_SIDE_SECTOR);
-  uint8_t sec_byte = rpos % 254;
-  uint32_t position = rpos - sec_byte;
-  uint32_t sector_count = position / 254;
-  uint8_t recordlen = buf->recordlen;
-  uart_puts_P(PSTR(">RPS1:")); //TODO:BZ:DELME
-  uart_puthex(use_sss); //TODO:BZ:DELME
-  uart_putc(' ');
-  uart_puthex(sec_byte); //TODO:BZ:DELME
-  uart_putc(' ');
-  uart_puthex32(position); //TODO:BZ:DELME
-  uart_putc(' ');
-  uart_puthex32(sector_count); //TODO:BZ:DELME
-  uart_putcrlf();
-  uart_flush();
-  mark_buffer_clean(buf);
-  if(buf->pvt.d64.blocks == 0)
-    buf->pvt.d64.blocks = use_sss ? 2 : 1;
-  if (checked_read_full(buf->pvt.d64.part, buf->pvt.d64.dh.track, buf->pvt.d64.dh.sector, (buf->pvt.d64.dh.entry * 32) + DIR_OFS_TRACK,
-                        buf->data, 2, ERROR_ILLEGAL_TS_LINK))
-    return 1;
-  buf->pvt.d64.track=buf->data[0];
-  buf->pvt.d64.sector=buf->data[1];
-  uart_puts_P(PSTR(">RPS2:")); //TODO:BZ:DELME
-  uart_puthex(buf->data[0]); //TODO:BZ:DELME
-  uart_putc(' ');
-  uart_puthex(buf->data[1]); //TODO:BZ:DELME
-  uart_putcrlf();
-  uart_flush();
-  if (checked_read_full(buf->pvt.d64.part, buf->pvt.d64.track, buf->pvt.d64.sector, 0,
-                        buf->data, 256, ERROR_ILLEGAL_TS_LINK))
-    return 1;
-  uart_puts_P(PSTR(">RPS2.5:")); //TODO:BZ:DELME
-  uart_puthex(buf->pvt.d64.dh.track); //TODO:BZ:DELME
-  uart_putc(' ');
-  uart_puthex(buf->pvt.d64.dh.sector); //TODO:BZ:DELME
-  uart_putcrlf();
-  uart_flush();
-  uint32_t tempPos = 0;
-  //TODO: this is dumb, we should USE the tools we have!!
-  for(uint16_t s=0;s<=sector_count;s++)
-  {
-      if(!buf->data[0])
-      {
-          if(d64_write(buf)) // make new linked sector
-            return 1;
-          uart_flush();
-          if(d64_alloc_in_ss(buf,buf->pvt.d64.track, buf->pvt.d64.sector))
-            return 1;
-          memset(buf->data,0,256);
-          uint8_t firstByte = 2 + (recordlen - (uint8_t)(tempPos % recordlen));
-          for(uint16_t i=firstByte;i<256;i+=recordlen)
-            buf->data[i]=0xff;
-          uart_flush();
-      }
-      else
-        d64_read(buf); //WRONG?
-      tempPos += 254;
-  }
-  uart_puts_P(PSTR(">RPS3-4\r\n")); //TODO:BZ:DELME
-  buf->recno = buf->rpos / buf->recordlen;
-  buf->position = 2+sec_byte; // is this right?
-  uart_flush();
-  return 0;
-}
-
 static uint8_t d64_readwrite(buffer_t *buf)
 {
-  uart_puts_P(PSTR(">ReadWrite:")); //TODO:BZ:DELME
-  uart_puthex(buf->read); //TODO:BZ:DELME
-  uart_putc(' ');
+  uart_puts_P(PSTR(">RdWrCallback:")); //TODO:BZ:DELME
   uart_puthex32(buf->rpos); //TODO:BZ:DELME
   uart_putcrlf();
   uart_flush();
   if(buf->rpos) // this is a special case FORCING a record position
   {
-    uart_puts_P(PSTR(">RW1\r\n")); //TODO:BZ:DELME
     if(d64_flush_buf(buf))
       return 1;
-    if(d64_rel_position_buf(buf,buf->rpos))
+    if(d64_force_seek(buf,buf->rpos))
       return 1;
     buf->rpos = 0; // clear the rpos flag
-    uart_puts_P(PSTR(">RW2\r\n")); //TODO:BZ:DELME
     uart_flush();
     return 0; // nothing left to do?
   }
-  uart_puts_P(PSTR(">RW5\r\n")); //TODO:BZ:DELME
   // 1. reading and ran out of buffer
   if(!buf->dirty && (buf->mustflush == 0)) // this is the read condition
   {
-    uart_puts_P(PSTR(">RW5.001\r\n")); //TODO:BZ:DELME
     if(d64_flush_buf(buf))
       return 1;
 
     d64_read(buf);  // move to the next readable sector from the current one
     mark_write_buffer(buf);
-    uart_puts_P(PSTR(">RW5.002\r\n")); //TODO:BZ:DELME
     uart_flush();
     return 0;
   }
@@ -2098,20 +2315,16 @@ static uint8_t d64_readwrite(buffer_t *buf)
   uint32_t nextBytePos  = startBytePos + (uint32_t)buf->recordlen;
   // 2. writing and ran out of buffer
   if(buf->mustflush == 1) { // still reading/writing to same record, just new sector
-    uart_puts_P(PSTR(">RW5.1\r\n")); //TODO:BZ:DELME
     // the new sector already exists, so just read it up and continue
     if(buf->data[0] > 0) {
-      uart_puts_P(PSTR(">RW5.2\r\n")); //TODO:BZ:DELME
       if(d64_flush_buf(buf))
         return 1;
       d64_read(buf);  // move to the next readable sector from the current one
       mark_write_buffer(buf);
-      uart_puts_P(PSTR(">RW5.3\r\n")); //TODO:BZ:DELME
       uart_flush();
       return 0;
     }
     // the new sector doesn't exist, so create it, and move along
-    uart_puts_P(PSTR(">RW5.01\r\n")); //TODO:BZ:DELME
     if(d64_write(buf))
       return 1;
     if(d64_alloc_in_ss(buf,buf->pvt.d64.track, buf->pvt.d64.sector))
@@ -2121,24 +2334,19 @@ static uint8_t d64_readwrite(buffer_t *buf)
     for(uint16_t i=firstByte;i<256;i+=buf->recordlen)
       buf->data[i]=0xff;
     buf->recno++;
-    uart_puts_P(PSTR(">RW5.02\r\n")); //TODO:BZ:DELME
     uart_flush();
     return 0;
   }
-  uart_puts_P(PSTR(">RW5.00001\r\n")); //TODO:BZ:DELME
   // 3. writing and reached and-of-record, so...
-  //TODO: uh... move the pointer
   uint32_t ssno = startBytePos / 254;
   uint32_t esno = nextBytePos / 254;
   if(ssno == esno) {
-    uart_puts_P(PSTR(">RW5.00002\r\n")); //TODO:BZ:DELME
     buf->recno++;
     buf->position = 2 + (nextBytePos % 254);
     uart_flush();
     return 0;
   }
   if(buf->data[0] != 0) {
-    uart_puts_P(PSTR(">RW5.00003\r\n")); //TODO:BZ:DELME
     if(d64_read(buf))
       return 1;
     buf->recno++;
@@ -2146,7 +2354,6 @@ static uint8_t d64_readwrite(buffer_t *buf)
     uart_flush();
     return 0;
   }
-  uart_puts_P(PSTR(">RW5.00004\r\n")); //TODO:BZ:DELME
   if(d64_write(buf))
     return 1;
   if(d64_alloc_in_ss(buf,buf->pvt.d64.track, buf->pvt.d64.sector))
@@ -2157,7 +2364,6 @@ static uint8_t d64_readwrite(buffer_t *buf)
     buf->data[i]=0xff;
   buf->recno++;
   buf->position = 2 + (nextBytePos % 254);
-  uart_puts_P(PSTR(">RW5.0000X\r\n")); //TODO:BZ:DELME
   uart_flush();
   return 0;
 }
@@ -2168,6 +2374,7 @@ static void d64_open_rel(path_t *path, cbmdirent_t *dent, buffer_t *buf, uint8_t
   uart_putc(' ');
   uart_puthex(mode);
   uart_putcrlf(); //TODO:BZ:DELME
+  uart_flush();
   // path: part, dxx.track, dxx.sector- of First dir entry
   // dent: name, blocksize, remainder, pvt.dxx.dh: track, sector, entry# of dile
   // NOTE: 70 no channel 0 0 happens on mismatch of recordlen, but only if you "p"
@@ -2266,7 +2473,6 @@ static void d64_rename(path_t *path, cbmdirent_t *dent, uint8_t *newname) {
 
   write_entry(path->part, &dent->pvt.dxx.dh, ops_scratch, 1);
 }
-
 
 /**
  * d64_raw_directory - open directory track as file

@@ -422,7 +422,7 @@ void ieee488_BusIdle(void) {
   ieee488_SetNRFD(1);                           // NRFD high
   if (ieee488_TE75160 != TE_LISTEN)
     ieee488_DataListen();
-  uart_puts_P(PSTR("idle\r\n"));
+  //uart_puts_P(PSTR("idle\r\n"));
 }
 
 
@@ -503,7 +503,7 @@ static void ieee488_IgnoreBytes(void) {
   uint8_t BusSignals;
   char c;
 
-  uart_puts_P(PSTR("Ignoring data\n"));
+  //uart_puts_P(PSTR("Ignoring data\n"));
   do {
     BusSignals = ieee488_RxByte(&c);
   } while ((BusSignals != RX_ATN) && (BusSignals != RX_IFC));
@@ -519,7 +519,7 @@ void ieee488_ListenLoop(uint8_t action, uint8_t sa) {
   // Abort if there is no buffer or it's not open for writing
   // and it isn't an OPEN command
   if ((buf == NULL || !buf->write) && (action != LL_OPEN)) {
-    uart_puts_P(PSTR("LLabort\n"));
+    //uart_puts_P(PSTR("LLabort\n"));
     ieee488_IgnoreBytes();
     return;
   }
@@ -553,9 +553,10 @@ void ieee488_ListenLoop(uint8_t action, uint8_t sa) {
       buf = find_buffer(sa);
     }
 
-    if((!buf->recordlen) // record overflow check
+    if((buf->recordlen>0) // record overflow check
     &&(++writeCount>buf->recordlen)) {
       writeCount--;
+      uart_puts_P(PSTR("overflow\r\n"));
       set_error_ts(ERROR_RECORD_OVERFLOW,0,0);
     } else { // normal happy writing
       if(buf->rpos != 0) {
@@ -597,7 +598,7 @@ void ieee488_TalkLoop(uint8_t sa) {
 
   buf = find_buffer(sa);
   if (buf == NULL) {
-    uart_puts_P(PSTR("T0\r\n"));
+    //uart_puts_P(PSTR("T0\r\n"));
     ieee488_BusIdle();
     return;
   }
@@ -611,7 +612,7 @@ void ieee488_TalkLoop(uint8_t sa) {
       ieee488_SetEOI(1);
       while (ieee488_NDAC()) {          // Wait for NDAC low
         if (ieee488_ATN_received) {
-          uart_puts_P(PSTR("T1\r\n"));
+          //uart_puts_P(PSTR("T1\r\n"));
           ieee488_BusIdle();
           return;
         }
@@ -619,7 +620,7 @@ void ieee488_TalkLoop(uint8_t sa) {
       }
       while (!ieee488_NRFD()) {         // Wait for NRFD high
         if (ieee488_ATN_received) {
-          uart_puts_P(PSTR("T2\r\n"));
+          //uart_puts_P(PSTR("T2\r\n"));
           return;
         }
         if (ieee488_CheckIFC()) return;
@@ -630,7 +631,7 @@ void ieee488_TalkLoop(uint8_t sa) {
       c = buf->data[buf->position];
 
       if (ieee488_NDAC() || ieee488_ATN_received) {   // NDAC must stay low
-        uart_puts_P(PSTR("T3\r\n"));
+        //uart_puts_P(PSTR("T3\r\n"));
         ieee488_BusIdle();
         return;
       }
@@ -641,7 +642,7 @@ void ieee488_TalkLoop(uint8_t sa) {
         ieee488_DataTalk();
       ieee488_SetData(c);
       if (ieee488_NDAC() || ieee488_ATN_received) {
-        uart_puts_P(PSTR("T4\r\n"));
+        //uart_puts_P(PSTR("T4\r\n"));
         return;
       }
       ieee488_SetDAV(0);                // Say data valid
@@ -651,7 +652,7 @@ void ieee488_TalkLoop(uint8_t sa) {
         if (ieee488_NDAC() || ieee488_ATN_received) {
           ieee488_SetDAV(1);
           ieee488_SetEOI(1);            // Release DAV and EOI
-          uart_puts_P(PSTR("T5\r\n"));
+          //uart_puts_P(PSTR("T5\r\n"));
           ieee488_BusIdle();
           return;
         }
@@ -662,7 +663,7 @@ void ieee488_TalkLoop(uint8_t sa) {
         if (ieee488_ATN_received) {
           ieee488_SetDAV(1);
           ieee488_SetEOI(1);            // Release DAV and EOI
-          uart_puts_P(PSTR("T6\r\n"));
+          //uart_puts_P(PSTR("T6\r\n"));
           return;
         }
         if (ieee488_CheckIFC()) return;
@@ -679,21 +680,21 @@ void ieee488_TalkLoop(uint8_t sa) {
     // PET/CBM-II wait here without timeout until DAV=1
     // Perfect for flushing buffers without hurry
 
-    uart_puts_P(PSTR("T7\r\n"));
+    //uart_puts_P(PSTR("T7\r\n"));
 
     if (buf->sendeoi && sa != 15 && !buf->recordlen &&
         buf->refill != directbuffer_refill) {
       buf->read = 0;
       ieee488_SetDAV(1);
       ieee488_SetEOI(1);                // Release DAV and EOI
-      uart_puts_P(PSTR("T8\r\n"));
+      //uart_puts_P(PSTR("T8\r\n"));
       break;
     }
 
     if (buf->refill(buf)) {             // Refill buffer
       ieee488_SetDAV(1);
       ieee488_SetEOI(1);                // Release DAV and EOI
-      uart_puts_P(PSTR("T9\r\n"));
+      //uart_puts_P(PSTR("T9\r\n"));
       return;
     }
 
@@ -701,12 +702,12 @@ void ieee488_TalkLoop(uint8_t sa) {
     buf = find_buffer(sa);
   }
 
-  uart_puts_P(PSTR("TA\r\n"));
+  //uart_puts_P(PSTR("TA\r\n"));
 }
 
 
 void ieee488_Unlisten(void) {
-  uart_puts_P(PSTR("ULN\r\n"));
+  //uart_puts_P(PSTR("ULN\r\n"));
   ieee488_BusIdle();
 
   // If we received a command or a file name to open, process it now
@@ -722,7 +723,7 @@ void ieee488_Unlisten(void) {
 
 
 void ieee488_Untalk(void) {
-  uart_puts_P(PSTR("UTK\r\n"));
+  //uart_puts_P(PSTR("UTK\r\n"));
   ieee488_BusIdle();
   ieee488_TalkingDevice = 0;            // we don't talk any more
 }
@@ -730,7 +731,7 @@ void ieee488_Untalk(void) {
 
 void ieee488_ProcessIFC(void) {
   ieee488_IFCreceived = false;
-  uart_puts_P(PSTR("\r\nIFC\r\n"));
+  //uart_puts_P(PSTR("\r\nIFC\r\n"));
   free_multiple_buffers(FMB_USER_CLEAN);
   ieee488_Init();
   read_configuration();
@@ -807,7 +808,7 @@ void handle_ieee488(void) {
       ieee488_Untalk();
     else if (cmd3 == IEEE_LISTEN) {       // LISTEN
       if (Device == device_address) {
-        uart_puts_P(PSTR("LSN\r\n"));
+        //uart_puts_P(PSTR("LSN\r\n"));
         ieee488_ListenActive = Device;
         // Override talk state because we can't be
         // listener and talker at the same time
@@ -815,7 +816,7 @@ void handle_ieee488(void) {
       }
     } else if (cmd3 == IEEE_TALK) {       // TALK
       if (Device == device_address) {
-        uart_puts_P(PSTR("TLK\r\n"));
+        //uart_puts_P(PSTR("TLK\r\n"));
         ieee488_TalkingDevice = Device;
         // Override listen state because we can't be
         // listener and talker at the same time
@@ -824,10 +825,10 @@ void handle_ieee488(void) {
     } else if (cmd4 == IEEE_SECONDARY) {  // DATA
       while (!ieee488_ATN());             // Wait for ATN high
       if (ieee488_ListenActive) {
-        printf("DTA L %d\r\n", sa);
+        //printf("DTA L %d\r\n", sa);
         ieee488_ListenLoop(LL_RECEIVE, sa);
       } else if (ieee488_TalkingDevice) {
-        printf("DTA T %d\r\n", sa);
+        //printf("DTA T %d\r\n", sa);
         ieee488_TalkLoop(sa);
       }
     } else if (cmd4 == IEEE_CLOSE) {      // CLOSE
@@ -855,7 +856,7 @@ void handle_ieee488(void) {
         ieee488_ListenLoop(LL_OPEN, sa);
       }
     } else {
-      uart_puts_P(PSTR("UKN\r\n"));
+      //uart_puts_P(PSTR("UKN\r\n"));
     }
   }
 }
